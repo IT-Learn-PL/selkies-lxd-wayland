@@ -74,6 +74,8 @@ Key environment variables:
 - `DESKTOP_ENVIRONMENT=kde` - Target desktop: `kde` (KDE Plasma) or `xfce` (XFCE + Labwc).
 - `PIXELFLUX_WAYLAND=true` - Enables Wayland mode in Pixelflux.
 - `PIXELFLUX_CU=5000` - Pixelflux Computer Use API port (required by Pelorus).
+- `PIXELFLUX_CU_TOKEN` - Bearer token protecting the Pixelflux Computer Use API (generated automatically by `setup.sh`).
+- `SELKIES_COMMAND_ENABLED=true` - Enables WebSocket command messages required for the Selkies 2.2+ sidebar application launcher.
 - `PELORUS=true` - Activates the Pelorus agent and web UI.
 - `PELORUS_PROVIDER` - LLM provider (`ollama`, OpenAI-compatible, or `gemini`).
 - `PELORUS_ENDPOINT` - Model API endpoint URL (e.g. `http://localhost:11434`).

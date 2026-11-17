@@ -25,7 +25,7 @@ DASHBOARD="${DASHBOARD:-selkies-dashboard}"
 SELKIES_FILE_TRANSFERS="${SELKIES_FILE_TRANSFERS:-upload,download}"
 HARDEN_DESKTOP="${HARDEN_DESKTOP:-false}"
 PELORUS="${PELORUS:-true}"
-SELKIES_TAG="${SELKIES_TAG:-debiantrixie-c5555162-ls138}"
+SELKIES_TAG="${SELKIES_TAG:-debiantrixie-60ce2ea6-ls152}"
 
 # 1. Obtain default.conf template from rootfs, local cache, or fallback git clone
 if [ -n "$SELKIES_ROOTFS" ] && [ -f "$SELKIES_ROOTFS/defaults/default.conf" ]; then

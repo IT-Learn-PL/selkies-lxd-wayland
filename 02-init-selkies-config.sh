@@ -1,11 +1,8 @@
 #!/bin/bash
 set -e
 
-# JS log setup
-touch /tmp/selkies_js.log
-chmod 777 /tmp/selkies_js.log
-
 # Device permissions if mapped into container
+mkdir -pm1777 /dev/input
 for i in $(seq 0 3); do
   if [ -e "/dev/input/js$i" ]; then
     chmod 777 "/dev/input/js$i"

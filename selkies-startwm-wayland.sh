@@ -20,6 +20,30 @@ fi
 # 2. Wait for Pixelflux Wayland socket (wayland-1)
 SOCKET_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 PIXELFLUX_SOCKET="${SOCKET_DIR}/${WAYLAND_DISPLAY:-wayland-1}"
+if [ -z "${SELKIES_JS_SOCKET_PATH}" ] && [ -n "${SOCKET_DIR}" ]; then
+  export SELKIES_JS_SOCKET_PATH="${SOCKET_DIR}"
+fi
+
+# CPU rendering optimization (llvmpipe thread count when no GPU render node is present)
+HAS_GPU_NODE=false
+if ls /dev/dri/renderD* /dev/nvidia0 >/dev/null 2>&1; then
+  HAS_GPU_NODE=true
+else
+  CPU_SHARE=$(nproc 2>/dev/null || echo 2)
+  if read -r QUOTA PERIOD < /sys/fs/cgroup/cpu.max 2>/dev/null && [ "${QUOTA}" != "max" ]; then
+    CPU_SHARE=$(( (QUOTA + PERIOD - 1) / PERIOD ))
+  elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+    QUOTA=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)
+    PERIOD=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)
+    if [ "${QUOTA}" -gt 0 ] && [ "${PERIOD}" -gt 0 ]; then
+      CPU_SHARE=$(( (QUOTA + PERIOD - 1) / PERIOD ))
+    fi
+  fi
+  [ "${CPU_SHARE}" -lt 1 ] && CPU_SHARE=1
+  [ "${CPU_SHARE}" -gt 8 ] && CPU_SHARE=8
+  export LP_NUM_THREADS="${LP_NUM_THREADS:-${CPU_SHARE}}"
+  echo "[selkies-session] No GPU render node detected: setting LP_NUM_THREADS=${LP_NUM_THREADS}"
+fi
 
 echo "[selkies-session] Waiting for Selkies Wayland socket at ${PIXELFLUX_SOCKET}..."
 FOUND_SOCKET=false
@@ -155,6 +179,14 @@ else
       . "${env_sh}"
     fi
   done
+
+  # Global theme defaults layer & CPU rendering optimizations (shadows and translucency off when no GPU)
+  mkdir -p "${HOME}/.config/kdedefaults" 2>/dev/null || true
+  export XDG_CONFIG_DIRS="${HOME}/.config/kdedefaults:${XDG_CONFIG_DIRS:-/etc/xdg}"
+  if [ "${HAS_GPU_NODE}" = "false" ] || [ "${KWIN_COMPOSE}" = "Q" ] || [ "${KWIN_COMPOSE}" = "QPainter" ]; then
+    kwriteconfig6 --file "${HOME}/.config/kdedefaults/kwinrc" --group Plugins --key translucencyEnabled --type bool false 2>/dev/null || true
+    kwriteconfig6 --file "${HOME}/.config/kdedefaults/breezerc" --group Common --key ShadowSize ShadowNone 2>/dev/null || true
+  fi
 
   # Initialize application cache
   command -v kbuildsycoca6 >/dev/null 2>&1 && kbuildsycoca6 2>/dev/null || true

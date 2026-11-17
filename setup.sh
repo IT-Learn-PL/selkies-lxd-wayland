@@ -5,14 +5,16 @@ set -eo pipefail
 # Selkies (Wayland) + Pelorus - installer for LXC/LXD/Proxmox
 #
 # Usage:
-#   bash setup.sh [kde|xfce] [--services-only] [--fix-session]
+#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--services-only] [--fix-session]
 #
+#   --with-chrome    installs Google Chrome via install-chrome.sh (x86_64 only)
+#   --no-chrome      skips Google Chrome installation without prompting
 #   --services-only  skips package installation; only configures the
 #                    systemd --user services (useful after a failed install)
 #   --fix-session    only repairs/checks the systemd user session, then exits
 #
 # Variables:
-#   DESKTOP_ENV=kde|xfce   PASSWORD=...   SETUP_USER=<user> (when running as root)
+#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   PASSWORD=...   SETUP_USER=<user> (when running as root)
 # ==============================================================================
 
 # The script must run from its own directory (it copies files via relative paths)
@@ -27,6 +29,8 @@ for arg in "$@"; do
   case "$arg" in
     --services-only) SERVICES_ONLY=1 ;;
     --fix-session)   FIX_SESSION_ONLY=1 ;;
+    --with-chrome)   INSTALL_CHROME="yes" ;;
+    --no-chrome)     INSTALL_CHROME="no" ;;
     kde|KDE|xfce|XFCE) DESKTOP_ENV="${arg,,}" ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
@@ -64,7 +68,7 @@ reexec_as_user_if_root() {
   chmod -R a+rX "$SCRIPT_DIR" 2>/dev/null || true
 
   local envs="" v
-  for v in DESKTOP_ENV PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
+  for v in DESKTOP_ENV INSTALL_CHROME CHROME_EXTRA_FLAGS PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
            DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY; do
     [ -n "${!v:-}" ] && envs+=" $(printf '%s=%q' "$v" "${!v}")"
   done
@@ -236,6 +240,43 @@ case "${DESKTOP_ENV,,}" in
 esac
 echo "[OK] Selected Desktop Environment: $DESKTOP_ENV"
 
+# 2b. Ask whether to install Google Chrome (x86_64 only)
+INSTALL_CHROME="${INSTALL_CHROME:-}"
+if [ "$ARCH" = "x86_64" ]; then
+  if [ -z "$INSTALL_CHROME" ]; then
+    if [ -t 0 ]; then
+      echo "--------------------------------------------------"
+      echo "Do you want to install Google Chrome (Wayland + VA-API GPU support)?"
+      echo "--------------------------------------------------"
+      read -rp "Install Google Chrome? [y/N]: " chrome_choice || chrome_choice=""
+      case "${chrome_choice,,}" in
+        y|yes|1|true)
+          INSTALL_CHROME="yes"
+          ;;
+        *)
+          INSTALL_CHROME="no"
+          ;;
+      esac
+    else
+      INSTALL_CHROME="no"
+    fi
+  fi
+  case "${INSTALL_CHROME,,}" in
+    y|yes|1|true)
+      INSTALL_CHROME="yes"
+      ;;
+    *)
+      INSTALL_CHROME="no"
+      ;;
+  esac
+  echo "[OK] Install Google Chrome: $INSTALL_CHROME"
+else
+  if [[ "${INSTALL_CHROME,,}" =~ ^(y|yes|1|true)$ ]]; then
+    warn "Google Chrome is only available for x86_64 (current: $ARCH) - skipping."
+  fi
+  INSTALL_CHROME="no"
+fi
+
 # 3. Set variables
 echo "[OK] Variables Set"
 
@@ -250,7 +291,7 @@ echo "--- Updating repositories and installing system packages for $DESKTOP_ENV 
 sudo apt update
 
 COMMON_PACKAGES=(
-  acl curl git libepoxy0 libnginx-mod-http-fancyindex locales-all nginx pipx pulseaudio ssl-cert unzip
+  acl curl git libepoxy0 libnginx-mod-http-fancyindex locales-all nginx pipx pulseaudio pulseaudio-utils ssl-cert unzip
   x11-xkb-utils xcvt xdotool xclip xsel xwayland
   at-spi2-core dbus-user-session wl-clipboard python3 python3-pip
   python3-gi python3-gi-cairo gir1.2-atspi-2.0 gir1.2-gtk-3.0
@@ -284,7 +325,7 @@ sudo usermod -aG audio,video "$USER"
 # 8. Pull and extract Selkies components via udocker
 echo "--- Pulling Selkies image via udocker ---"
 pipx install udocker 2>/dev/null || pipx upgrade udocker 2>/dev/null || true
-SELKIES_IMAGE="${SELKIES_IMAGE:-lsiobase/selkies:debiantrixie-c5555162-ls138}"
+SELKIES_IMAGE="${SELKIES_IMAGE:-lsiobase/selkies:debiantrixie-60ce2ea6-ls152}"
 export SELKIES_TAG="${SELKIES_IMAGE#*:}"
 udocker pull "$SELKIES_IMAGE"
 udocker create --name=selkies_tmp "$SELKIES_IMAGE"
@@ -299,7 +340,14 @@ echo "Located image rootfs: $SELKIES_ROOTFS"
 echo "--- Copying Selkies binaries and libraries ---"
 sudo rclone copy -L "$SELKIES_ROOTFS/usr/lib/selkies_input_interposer.so" /usr/lib/
 sudo ln -sf /usr/lib/selkies_input_interposer.so /usr/lib/selkies_joystick_interposer.so
+if [ -f "$SELKIES_ROOTFS/usr/lib/selkies_v4l2_interposer.so" ]; then
+  sudo rclone copy -L "$SELKIES_ROOTFS/usr/lib/selkies_v4l2_interposer.so" /usr/lib/
+fi
 sudo rclone copy -L "$SELKIES_ROOTFS/opt/lib/libudev.so.1.0.0-fake" /opt/lib/
+if [ -f "$SELKIES_ROOTFS/usr/bin/selkies-desktop" ]; then
+  sudo rclone copy -L "$SELKIES_ROOTFS/usr/bin/selkies-desktop" /usr/bin/
+  sudo chmod 755 /usr/bin/selkies-desktop
+fi
 sudo rclone copy -L "$SELKIES_ROOTFS/lsiopy" /lsiopy
 sudo rclone copy -L "$SELKIES_ROOTFS/usr/share/selkies" /usr/share/selkies
 sudo chmod -R a+rX /usr/share/selkies
@@ -327,13 +375,14 @@ else
   echo "[OK] All library dependencies in /lsiopy are satisfied."
 fi
 
-# 10. Reset capabilities on compositors (required for unprivileged LXC containers)
+# 10. Reset capabilities on compositors and disable UDisks2 D-Bus activation (required for unprivileged LXC containers)
 for comp in kwin_wayland labwc; do
   if command -v "$comp" >/dev/null 2>&1; then
     sudo setcap -r "$(command -v "$comp")" 2>/dev/null || true
     echo "[OK] Removed capabilities from $comp for proper unprivileged LXC operation."
   fi
 done
+sudo rm -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service
 
 # 11. Prepare configuration directory for Pelorus AI (/config/agent)
 sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /config /config/agent
@@ -375,12 +424,27 @@ else
 fi
 
 # Ensure critical ports and settings are present in existing configuration
-for cfg_line in "CUSTOM_WS_PORT=8082" "SELKIES_PORT=8082" "SELKIES_COMPUTER_USE_BIND=5000" "SELKIES_APP_WAYLAND_DISPLAY=wayland-0"; do
+for cfg_line in \
+    "CUSTOM_WS_PORT=8082" \
+    "SELKIES_PORT=8082" \
+    "SELKIES_COMPUTER_USE_BIND=5000" \
+    "SELKIES_APP_WAYLAND_DISPLAY=wayland-0" \
+    "SELKIES_COMMAND_ENABLED=true" \
+    "SELKIES_ENABLE_DUAL_MODE=false"; do
   cfg_key="${cfg_line%%=*}"
   if ! grep -q "^${cfg_key}=" ~/.config/selkies/selkies.env; then
     echo "$cfg_line" >> ~/.config/selkies/selkies.env
   fi
 done
+
+# Generate PIXELFLUX_CU_TOKEN if missing or empty (required by Pixelflux 2.2+ and Pelorus 0.2.4+)
+current_cu_token=$(grep "^PIXELFLUX_CU_TOKEN=" ~/.config/selkies/selkies.env 2>/dev/null | cut -d= -f2- | tr -d ' "\r' || true)
+if [ -z "$current_cu_token" ]; then
+  cu_token="$(openssl rand -hex 32)"
+  sed -i '/^PIXELFLUX_CU_TOKEN=/d' ~/.config/selkies/selkies.env
+  echo "PIXELFLUX_CU_TOKEN=$cu_token" >> ~/.config/selkies/selkies.env
+  echo "[OK] Generated PIXELFLUX_CU_TOKEN in ~/.config/selkies/selkies.env"
+fi
 echo "[INFO] Verified and synchronized ~/.config/selkies/selkies.env configuration."
 
 # 14. Configure PulseAudio services (null-sinks)
@@ -389,6 +453,8 @@ sudo mkdir -p /etc/pulse/default.pa.d
 sudo tee /etc/pulse/default.pa.d/selkies.pa > /dev/null <<EOF
 load-module module-null-sink sink_name="output" sink_properties=device.description="output"
 load-module module-null-sink sink_name="input" sink_properties=device.description="input"
+set-default-sink output
+set-default-source input.monitor
 EOF
 
 # 15. Disable PipeWire in favor of PulseAudio
@@ -408,6 +474,12 @@ sudo bash 02-init-selkies-config.sh
 # 17. Remove temporary udocker container and image
 udocker rm selkies_tmp 2>/dev/null || true
 udocker rmi "$SELKIES_IMAGE" 2>/dev/null || true
+
+# 17b. Optional Google Chrome installation via install-chrome.sh
+if [ "${INSTALL_CHROME:-no}" = "yes" ]; then
+  echo "--- Installing Google Chrome via install-chrome.sh ---"
+  bash "$SCRIPT_DIR/install-chrome.sh"
+fi
 
 fi  # end of !SERVICES_ONLY block
 

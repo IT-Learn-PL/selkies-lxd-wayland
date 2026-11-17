@@ -99,7 +99,7 @@ fi
 [ -x /usr/bin/google-chrome-stable ] || die "google-chrome-stable is not installed (run without --flags-only first)."
 
 # ---------- Flags ----------
-CHROME_FLAGS="--ozone-platform=wayland"
+CHROME_FLAGS="--ozone-platform=wayland --password-store=basic"
 CHROME_FLAGS+=" --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiIgnoreDriverChecks,VaapiVideoDecoder,WaylandWindowDecorations"
 CHROME_FLAGS+=" --enable-gpu-rasterization --enable-zero-copy --ignore-gpu-blocklist"
 [ -n "${CHROME_EXTRA_FLAGS:-}" ] && CHROME_FLAGS+=" ${CHROME_EXTRA_FLAGS}"

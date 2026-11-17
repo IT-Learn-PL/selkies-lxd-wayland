@@ -1,7 +1,183 @@
 #!/bin/bash
 set -eo pipefail
 
+# ==============================================================================
+# Selkies (Wayland) + Pelorus - installer for LXC/LXD/Proxmox
+#
+# Usage:
+#   bash setup.sh [kde|xfce] [--services-only] [--fix-session]
+#
+#   --services-only  skips package installation; only configures the
+#                    systemd --user services (useful after a failed install)
+#   --fix-session    only repairs/checks the systemd user session, then exits
+#
+# Variables:
+#   DESKTOP_ENV=kde|xfce   PASSWORD=...   SETUP_USER=<user> (when running as root)
+# ==============================================================================
+
+# The script must run from its own directory (it copies files via relative paths)
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ---------- Argument parsing ----------
+SERVICES_ONLY="${SERVICES_ONLY:-0}"
+FIX_SESSION_ONLY=0
+ORIG_ARGS=("$@")
+for arg in "$@"; do
+  case "$arg" in
+    --services-only) SERVICES_ONLY=1 ;;
+    --fix-session)   FIX_SESSION_ONLY=1 ;;
+    kde|KDE|xfce|XFCE) DESKTOP_ENV="${arg,,}" ;;
+    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
+
+log()  { echo "[setup] $*"; }
+warn() { echo "[WARN] $*" >&2; }
+die()  { echo "[ERROR] $*" >&2; exit 1; }
+
+# ==============================================================================
+# systemd user session handling (fixes the pct enter / pct exec / su problem)
+# ==============================================================================
+
+# Started as root (e.g. `pct enter`): switch to a regular user via
+# `runuser -l` (login shell) so that HOME, USER and $0 are correct.
+reexec_as_user_if_root() {
+  [ "$(id -u)" -eq 0 ] || return 0
+
+  local target="${SETUP_USER:-}"
+  if [ -z "$target" ]; then
+    # If the system has exactly one regular user, use that one
+    mapfile -t users < <(getent passwd | awk -F: '$3>=1000 && $3<60000 && $7 !~ /nologin|false/ {print $1}')
+    if [ "${#users[@]}" -eq 1 ]; then
+      target="${users[0]}"
+      log "Running as root - using the only regular user: $target"
+    else
+      die "This script cannot run as root. Run it as a regular user with sudo, or specify:
+         SETUP_USER=<username> bash setup.sh
+       Available users: ${users[*]:-none (create one: adduser <name> && usermod -aG sudo <name>)}"
+    fi
+  fi
+  id "$target" >/dev/null 2>&1 || die "User '$target' does not exist."
+
+  # The user needs access to the scripts directory
+  chmod -R a+rX "$SCRIPT_DIR" 2>/dev/null || true
+
+  local envs="" v
+  for v in DESKTOP_ENV PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
+           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY; do
+    [ -n "${!v:-}" ] && envs+=" $(printf '%s=%q' "$v" "${!v}")"
+  done
+  local args=""
+  [ "${#ORIG_ARGS[@]}" -gt 0 ] && args="$(printf ' %q' "${ORIG_ARGS[@]}")"
+
+  log "Switching to user '$target' (login shell)..."
+  exec runuser -l "$target" -c "cd $(printf '%q' "$SCRIPT_DIR") && env${envs} bash setup.sh${args}"
+}
+
+# Is the systemd --user session usable?
+user_session_ok() {
+  systemctl --user show-environment >/dev/null 2>&1
+}
+
+# Repairs the user session: linger + user@UID.service + environment variables.
+# $1 = "hard" -> fatal error on failure; "soft" -> warning only.
+ensure_user_session() {
+  local mode="${1:-hard}" uid
+  uid="$(id -u)"
+
+  # systemd must be PID 1
+  if [ ! -d /run/systemd/system ]; then
+    [ "$mode" = "hard" ] && die "systemd is not the init system (PID 1) in this container - user services will not work."
+    warn "systemd is not the init system - skipping session check."
+    return 1
+  fi
+
+  # Force correct variables (pct enter/su may leave e.g. root's XDG_RUNTIME_DIR)
+  export XDG_RUNTIME_DIR="/run/user/${uid}"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+
+  if user_session_ok; then
+    log "systemd --user session is working (XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR)."
+    sudo loginctl enable-linger "$USER" 2>/dev/null || true
+    return 0
+  fi
+
+  log "No systemd --user session (typical for pct enter / pct exec / su). Repairing..."
+
+  # 1. Linger: systemd keeps the user session alive without a login
+  sudo loginctl enable-linger "$USER" 2>/dev/null || warn "loginctl enable-linger failed"
+
+  # 2. Start user@UID.service (creates /run/user/UID and the systemd --user manager)
+  sudo systemctl start "user@${uid}.service" 2>/dev/null || warn "systemctl start user@${uid}.service failed"
+
+  # 3. Wait for the D-Bus socket
+  local i
+  for i in $(seq 1 30); do
+    [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+    sleep 0.5
+  done
+
+  # 4. If user@ started before dbus-user-session was installed, restart it (nothing runs in it yet)
+  if [ ! -S "${XDG_RUNTIME_DIR}/bus" ]; then
+    log "No D-Bus socket - restarting user@${uid}.service..."
+    sudo systemctl restart "user@${uid}.service" 2>/dev/null || true
+    for i in $(seq 1 30); do
+      [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+      sleep 0.5
+    done
+  fi
+
+  if user_session_ok; then
+    log "systemd --user session repaired."
+    return 0
+  fi
+
+  cat >&2 <<EOF
+
+[ERROR] Failed to start a systemd --user session for '$USER' (UID $uid).
+
+Diagnostics:
+  /run/user/$uid:   $(ls -ld "/run/user/$uid" 2>&1 | head -n1)
+  user@$uid.service: $(systemctl is-active "user@${uid}.service" 2>&1)
+  dbus-user-session: $(dpkg -s dbus-user-session 2>/dev/null | grep -m1 '^Status' || echo 'NOT INSTALLED')
+  virtualization:   $(systemd-detect-virt 2>/dev/null || echo '?')
+
+What to check:
+  * On the Proxmox host:   pct set <CTID> --features nesting=1,keyctl=1  (then: pct reboot <CTID>)
+  * Log in via SSH as '$USER' and run the script again.
+  * Finish without reinstalling packages:   bash setup.sh --services-only
+EOF
+  [ "$mode" = "hard" ] && exit 1
+  return 1
+}
+
+# ==============================================================================
+# Main
+# ==============================================================================
 echo "=== Starting Selkies (Wayland) + Pelorus installation on LXC ==="
+
+reexec_as_user_if_root
+: "${USER:=$(id -un)}"
+export USER
+
+# Make sure sudo works up front (avoids surprises midway through the installation)
+command -v sudo >/dev/null 2>&1 || die "'sudo' not found. As root: apt install sudo && usermod -aG sudo $USER"
+if ! sudo -v; then
+  die "User '$USER' does not have sudo privileges."
+fi
+
+# Session-repair-only mode
+if [ "$FIX_SESSION_ONLY" = "1" ]; then
+  ensure_user_session hard
+  echo "OK: the user session is working."
+  exit 0
+fi
+
+# Soft check at startup (full repair happens after the packages are installed)
+if [ "$SERVICES_ONLY" != "1" ]; then
+  user_session_ok || warn "systemd --user session is not active - it will be repaired automatically during installation."
+fi
 
 # 1. Verify supported CPU architecture
 ARCH="$(uname -m)"
@@ -15,8 +191,15 @@ case "$ARCH" in
     ;;
 esac
 
+export PATH="$HOME/.local/bin:$PATH"
+
+if [ "$SERVICES_ONLY" = "1" ]; then
+  log "--services-only mode: skipping package and component installation."
+  ensure_user_session hard
+else
+
 # 2. Select Desktop Environment (KDE or XFCE)
-DESKTOP_ENV="${DESKTOP_ENV:-${1:-}}"
+DESKTOP_ENV="${DESKTOP_ENV:-}"
 if [ -z "$DESKTOP_ENV" ] && [ -f ~/.config/selkies/selkies.env ]; then
   saved_de=$(grep "^DESKTOP_ENVIRONMENT=" ~/.config/selkies/selkies.env 2>/dev/null | cut -d= -f2- | tr -d ' "\r' || true)
   [ -n "$saved_de" ] && DESKTOP_ENV="$saved_de"
@@ -54,7 +237,6 @@ esac
 echo "[OK] Selected Desktop Environment: $DESKTOP_ENV"
 
 # 3. Set variables
-export PATH="$HOME/.local/bin:$PATH"
 echo "[OK] Variables Set"
 
 # 4. Create required directories
@@ -86,6 +268,9 @@ fi
 
 sudo DEBIAN_FRONTEND=noninteractive apt install -yq "${COMMON_PACKAGES[@]}" "${DE_PACKAGES[@]}"
 sudo apt clean
+
+# After dbus-user-session is installed: make sure the user session works
+ensure_user_session hard
 
 # 6. Install rclone (if not present)
 if ! command -v rclone >/dev/null 2>&1; then
@@ -207,8 +392,12 @@ load-module module-null-sink sink_name="input" sink_properties=device.descriptio
 EOF
 
 # 15. Disable PipeWire in favor of PulseAudio
-systemctl --user disable pipewire.service pipewire.socket wireplumber.service pipewire-pulse.service pipewire-pulse.socket 2>/dev/null || true
-systemctl --user mask pipewire.service pipewire.socket wireplumber.service pipewire-pulse.service pipewire-pulse.socket 2>/dev/null || true
+# --global works without an active session and applies to all users (mask in /etc/systemd/user)
+PW_UNITS=(pipewire.service pipewire.socket wireplumber.service pipewire-pulse.service pipewire-pulse.socket)
+sudo systemctl --global mask "${PW_UNITS[@]}" 2>/dev/null || warn "Failed to mask PipeWire (--global)"
+# Stop anything already running in the current session
+systemctl --user stop "${PW_UNITS[@]}" 2>/dev/null || true
+echo "[OK] PipeWire masked - PulseAudio remains the only sound server."
 
 # 16. Run Nginx and Selkies initialization scripts
 echo "--- Initializing Nginx and Selkies configuration ---"
@@ -220,8 +409,12 @@ sudo bash 02-init-selkies-config.sh
 udocker rm selkies_tmp 2>/dev/null || true
 udocker rmi "$SELKIES_IMAGE" 2>/dev/null || true
 
+fi  # end of !SERVICES_ONLY block
+
 # 18. Install systemd user units
 echo "--- Installing systemd units for user session ---"
+mkdir -p ~/.config/systemd/user
+
 # Remove legacy xvfb service if previously active
 if systemctl --user is-active --quiet xvfb 2>/dev/null || systemctl --user is-enabled --quiet xvfb 2>/dev/null; then
   systemctl --user disable --now xvfb 2>/dev/null || true
@@ -231,7 +424,14 @@ rm -f ~/.config/systemd/user/xvfb.service
 cp selkies.service desktop.service ~/.config/systemd/user/
 
 # 19. Enable and start systemd user services
-loginctl enable-linger "$USER"
+# Re-verify the session right before using systemctl --user
+ensure_user_session hard
+sudo loginctl enable-linger "$USER"
+
+# PipeWire (in case of --services-only mode) - global mask
+sudo systemctl --global mask pipewire.service pipewire.socket wireplumber.service \
+  pipewire-pulse.service pipewire-pulse.socket 2>/dev/null || true
+
 systemctl --user daemon-reexec
 systemctl --user daemon-reload
 systemctl --user enable --now pulseaudio selkies desktop
@@ -240,3 +440,5 @@ echo "=== Installation completed successfully! ==="
 echo "Access URLs:"
 echo "  Desktop: https://<container_ip>:3001/ or http://<container_ip>:3000/"
 echo "  Pelorus AI: https://<container_ip>:3001/pelorus/"
+echo
+echo "Check services:  systemctl --user status pulseaudio selkies desktop"

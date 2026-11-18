@@ -405,6 +405,26 @@ if [ -f "$SELKIES_ROOTFS/usr/bin/selkies-desktop" ]; then
   sudo rclone copy -L "$SELKIES_ROOTFS/usr/bin/selkies-desktop" /usr/bin/
   sudo chmod 755 /usr/bin/selkies-desktop
 fi
+if [ -f "$SELKIES_ROOTFS/usr/local/bin/selkies-proot" ]; then
+  sudo rclone copy -L "$SELKIES_ROOTFS/usr/local/bin/selkies-proot" /usr/local/bin/
+  sudo chmod 755 /usr/local/bin/selkies-proot
+fi
+if [ -d "$SELKIES_ROOTFS/proot-apps" ]; then
+  echo "--- Installing proot-apps for Selkies Apps menu ---"
+  sudo rclone copy -L "$SELKIES_ROOTFS/proot-apps" /proot-apps
+  sudo chmod -R a+rX /proot-apps
+  mkdir -p "$HOME/.local/bin"
+  cp -a /proot-apps/* "$HOME/.local/bin/"
+  chmod +x "$HOME/.local/bin/proot" "$HOME/.local/bin/proot-apps" "$HOME/.local/bin/jq" 2>/dev/null || true
+  ln -sfn proot "$HOME/.local/bin/bwrap"
+  rm -f "$HOME/.local/bin/proot-bwrap"
+  if ! grep -qsF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+  fi
+  if ! grep -qsF 'source <(proot-apps completion bash)' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'source <(proot-apps completion bash)' >> "$HOME/.bashrc"
+  fi
+fi
 sudo rclone copy -L "$SELKIES_ROOTFS/lsiopy" /lsiopy
 sudo rclone copy -L "$SELKIES_ROOTFS/usr/share/selkies" /usr/share/selkies
 sudo chmod -R a+rX /usr/share/selkies

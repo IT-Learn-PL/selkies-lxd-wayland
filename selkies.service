@@ -12,7 +12,8 @@ EnvironmentFile=-%h/.config/selkies/selkies.env
 Environment=LD_PRELOAD=/usr/lib/selkies_input_interposer.so:/opt/lib/libudev.so.1.0.0-fake
 Environment=PULSE_RUNTIME_PATH=%t/pulse
 Environment=VIRTUAL_ENV=/lsiopy
-Environment=PATH=/lsiopy/bin:/usr/local/bin:/usr/bin:/bin
+Environment=BWRAP=%h/.local/bin/bwrap
+Environment=PATH=%h/.local/bin:/lsiopy/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target

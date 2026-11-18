@@ -9,16 +9,18 @@ set -eo pipefail
 #   - Ubuntu 26.04 LTS (Resolute Raccoon)
 #
 # Usage:
-#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--services-only] [--fix-session]
+#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--packages-only] [--services-only] [--fix-session]
 #
 #   --with-chrome    installs Google Chrome via install-chrome.sh (x86_64 only)
 #   --no-chrome      skips Google Chrome installation without prompting
+#   --packages-only  installs only system packages and dependencies, then exits
 #   --services-only  skips package installation; only configures the
 #                    systemd --user services (useful after a failed install)
 #   --fix-session    only repairs/checks the systemd user session, then exits
 #
 # Variables:
-#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   PASSWORD=...   SETUP_USER=<user> (when running as root)
+#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   PACKAGES_ONLY=0|1   SERVICES_ONLY=0|1
+#   PASSWORD=...           SETUP_USER=<user> (when running as root)
 # ==============================================================================
 
 # The script must run from its own directory (it copies files via relative paths)
@@ -27,11 +29,13 @@ cd "$SCRIPT_DIR"
 INSTALL_LOG="/tmp/selkies-lxd-wayland-install.log"
 
 # ---------- Argument parsing ----------
+PACKAGES_ONLY="${PACKAGES_ONLY:-0}"
 SERVICES_ONLY="${SERVICES_ONLY:-0}"
 FIX_SESSION_ONLY=0
 ORIG_ARGS=("$@")
 for arg in "$@"; do
   case "$arg" in
+    --packages-only|--package-only) PACKAGES_ONLY=1 ;;
     --services-only) SERVICES_ONLY=1 ;;
     --fix-session)   FIX_SESSION_ONLY=1 ;;
     --with-chrome)   INSTALL_CHROME="yes" ;;
@@ -40,6 +44,10 @@ for arg in "$@"; do
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+
+if [ "$PACKAGES_ONLY" = "1" ] && [ "$SERVICES_ONLY" = "1" ]; then
+  die "Cannot specify both --packages-only and --services-only."
+fi
 
 log()  { echo "[setup] $*"; }
 warn() { echo "[WARN] $*" >&2; }
@@ -130,7 +138,7 @@ reexec_as_user_if_root() {
 
   local envs="" v
   for v in DESKTOP_ENV INSTALL_CHROME CHROME_EXTRA_FLAGS PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
-           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY; do
+           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY PACKAGES_ONLY; do
     [ -n "${!v:-}" ] && envs+=" $(printf '%s=%q' "$v" "${!v}")"
   done
   local args=""
@@ -251,7 +259,7 @@ if [ "$FIX_SESSION_ONLY" = "1" ]; then
 fi
 
 # Soft check at startup (full repair happens after the packages are installed)
-if [ "$SERVICES_ONLY" != "1" ]; then
+if [ "$SERVICES_ONLY" != "1" ] && [ "$PACKAGES_ONLY" != "1" ]; then
   user_session_ok || warn "systemd --user session is not active - it will be repaired automatically during installation."
 fi
 
@@ -441,7 +449,11 @@ sudo DEBIAN_FRONTEND=noninteractive apt install -yq "${COMMON_PACKAGES[@]}" "${A
 sudo apt clean
 
 # After dbus-user-session is installed: make sure the user session works
-ensure_user_session hard
+if [ "$PACKAGES_ONLY" = "1" ]; then
+  ensure_user_session soft || true
+else
+  ensure_user_session hard
+fi
 
 # 6. Install rclone (if not present)
 if ! command -v rclone >/dev/null 2>&1; then
@@ -490,6 +502,18 @@ verify_dri_groups() {
   fi
 }
 verify_dri_groups
+
+# Early exit for --packages-only mode
+if [ "$PACKAGES_ONLY" = "1" ]; then
+  if [ "${INSTALL_CHROME:-no}" = "yes" ]; then
+    echo "--- Installing Google Chrome via install-chrome.sh ---"
+    bash "$SCRIPT_DIR/install-chrome.sh"
+  fi
+  echo "=== Package installation completed successfully (--packages-only) ($(date -Is)) ==="
+  log "All required system packages and dependencies have been installed."
+  log "Installation log saved to: $INSTALL_LOG"
+  exit 0
+fi
 
 # 8. Pull and extract Selkies components via udocker
 echo "--- Pulling Selkies image via udocker ---"

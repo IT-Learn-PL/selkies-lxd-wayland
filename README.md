@@ -162,6 +162,9 @@ bash setup.sh kde --with-chrome
 # Install XFCE without Google Chrome
 bash setup.sh xfce --no-chrome
 
+# Install only required system packages and dependencies (skips Selkies & services)
+bash setup.sh kde --packages-only
+
 # Repair or reconfigure only systemd --user services without reinstalling packages
 bash setup.sh --services-only
 
@@ -175,6 +178,7 @@ bash setup.sh --fix-session
 | `kde` / `xfce` | Selects target desktop environment (`kde` = KDE Plasma 6, `xfce` = XFCE 4 with Labwc). |
 | `--with-chrome` | Automatically installs Google Chrome (x86_64 only) with hardware decoding. |
 | `--no-chrome` | Skips Google Chrome installation prompt. |
+| `--packages-only` | Installs only required system packages and dependencies, then exits (skips Selkies image extraction, services, and configuration). |
 | `--services-only` | Skips package downloads and only writes service files and configuration. |
 | `--fix-session` | Diagnoses and repairs the `systemd --user` session bus, then exits. |
 
@@ -183,6 +187,8 @@ bash setup.sh --fix-session
 |---|---|---|
 | `DESKTOP_ENV` | `kde` | Target desktop environment (`kde` or `xfce`). |
 | `INSTALL_CHROME` | `no` | Install Google Chrome (`yes` or `no`). |
+| `PACKAGES_ONLY` | `0` | Installs only system packages and dependencies (equivalent to `--packages-only`). |
+| `SERVICES_ONLY` | `0` | Configures only services and environment files, skipping package installations (equivalent to `--services-only`). |
 | `PASSWORD` | *(empty)* | Sets HTTP Basic Authentication password for Nginx web access. |
 | `SETUP_USER` | *(auto)* | Target username when script is executed as `root` (e.g. from `pct enter`). |
 | `CUSTOM_PORT` | `3000` | Nginx HTTP port. |

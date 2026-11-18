@@ -4,6 +4,13 @@ High-performance installation and setup scripts for running **Selkies** WebRTC d
 
 Supports both **KDE Plasma** and **XFCE**, running under native `systemd --user` session management without requiring Docker or nested container engines.
 
+> [!IMPORTANT]
+> **Supported operating systems only:**
+> - **Debian 13 (Trixie)** — uses `lsiobase/selkies:debiantrixie-*` image from LinuxServer.io
+> - **Ubuntu 26.04 LTS (Resolute Raccoon)** — uses `lsiobase/selkies:ubunturesolute-*` image from LinuxServer.io
+>
+> The installer detects the OS automatically and aborts with a clear error on any other distribution or version.
+
 ---
 
 ## Key Features
@@ -75,12 +82,35 @@ Supports both **KDE Plasma** and **XFCE**, running under native `systemd --user`
 
 ## Requirements & Prerequisites
 
-### 1. Supported Environments
+### 1. Supported Operating Systems & Selkies Images
+
+The installer detects the OS automatically from `/etc/os-release` and selects the matching dedicated LinuxServer.io Selkies base image. Only the following combinations are supported:
+
+| OS | Selkies Image |
+|---|---|
+| **Debian 13 (Trixie)** | `lsiobase/selkies:debiantrixie-60ce2ea6-ls152` |
+| **Ubuntu 26.04 LTS (Resolute Raccoon)** | `lsiobase/selkies:ubunturesolute-87420d8d-ls41` |
+
+> [!NOTE]
+> Any other OS version causes an immediate error with a list of supported systems. You can override the auto-detected image by passing `SELKIES_IMAGE=<tag>` as an environment variable.
+
+### 2. Supported Environments
 - **Host**: Proxmox VE, LXD, or vanilla LXC.
-- **Container Distribution**: Debian 13 (Trixie) or Debian-compatible distributions.
 - **CPU Architectures**: `x86_64` (AMD64) or `aarch64` (ARM64). *Note: Google Chrome installation is available on `x86_64` only.*
 
-### 2. Proxmox VE Container Configuration
+### 3. OS-Specific Package Notes
+
+#### Debian 13 (Trixie)
+- Enables the `non-free` APT component for `intel-media-va-driver-non-free` (Intel VA-API).
+- Uses `firefox-esr` from the main Debian repository.
+
+#### Ubuntu 26.04 LTS (Resolute Raccoon)
+- Enables the `universe` and `restricted` APT components for GPU and VA-API drivers.
+- Intel VA-API uses `intel-media-va-driver` (no `-non-free` suffix; available in `restricted`).
+- For XFCE installations, adds the **Mozilla Team PPA** (`ppa:mozillateam/ppa`) with APT pin priority 1001 to install a proper Firefox `.deb` instead of the default Snap redirect.
+- `plasma-welcome` exclusion marker is omitted (package does not exist in Ubuntu 26.04).
+
+### 4. Proxmox VE Container Configuration
 For Proxmox VE containers, ensure `nesting` and `keyctl` features are enabled (required for `systemd --user` session bus and lingering):
 
 ```bash
@@ -88,8 +118,7 @@ pct set <CTID> --features nesting=1,keyctl=1
 pct reboot <CTID>
 ```
 
-### 3. GPU Acceleration (Optional)
-By default, the installer configures software rendering (`KWIN_COMPOSE=Q`) with multi-threaded `llvmpipe`, ensuring smooth execution on CPU-only hosts.
+### 5. GPU Acceleration (Optional)By default, the installer configures software rendering (`KWIN_COMPOSE=Q`) with multi-threaded `llvmpipe`, ensuring smooth execution on CPU-only hosts.
 
 If GPU passthrough is desired:
 - **LXD**:

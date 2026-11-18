@@ -4,6 +4,10 @@ set -eo pipefail
 # ==============================================================================
 # Selkies (Wayland) + Pelorus - installer for LXC/LXD/Proxmox
 #
+# Supported operating systems:
+#   - Debian 13 (Trixie)
+#   - Ubuntu 26.04 LTS (Resolute Raccoon)
+#
 # Usage:
 #   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--services-only] [--fix-session]
 #
@@ -40,6 +44,59 @@ done
 log()  { echo "[setup] $*"; }
 warn() { echo "[WARN] $*" >&2; }
 die()  { echo "[ERROR] $*" >&2; exit 1; }
+
+# ==============================================================================
+# OS detection and validation
+# Supported: Debian 13 (Trixie)  |  Ubuntu 26.04 LTS (Resolute Raccoon)
+# ==============================================================================
+detect_os() {
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID="${ID:-}"
+    OS_VERSION_ID="${VERSION_ID:-}"
+    OS_VERSION_CODENAME="${VERSION_CODENAME:-}"
+    OS_PRETTY="${PRETTY_NAME:-unknown}"
+  else
+    die "/etc/os-release not found - cannot detect operating system."
+  fi
+
+  case "${OS_ID}" in
+    debian)
+      if [ "${OS_VERSION_ID}" = "13" ] || [ "${OS_VERSION_CODENAME}" = "trixie" ]; then
+        DISTRO="debian"
+        DISTRO_LABEL="Debian 13 (Trixie)"
+        echo "[OK] Detected supported OS: ${DISTRO_LABEL}"
+      else
+        die "Unsupported Debian version: ${OS_PRETTY}
+Supported versions:
+  - Debian 13 (Trixie)
+  - Ubuntu 26.04 LTS (Resolute Raccoon)"
+      fi
+      ;;
+    ubuntu)
+      if [ "${OS_VERSION_ID}" = "26.04" ] || [ "${OS_VERSION_CODENAME}" = "resolute" ]; then
+        DISTRO="ubuntu"
+        DISTRO_LABEL="Ubuntu 26.04 LTS (Resolute Raccoon)"
+        echo "[OK] Detected supported OS: ${DISTRO_LABEL}"
+      else
+        die "Unsupported Ubuntu version: ${OS_PRETTY}
+Supported versions:
+  - Debian 13 (Trixie)
+  - Ubuntu 26.04 LTS (Resolute Raccoon)"
+      fi
+      ;;
+    *)
+      die "Unsupported operating system: ${OS_PRETTY}
+Supported systems:
+  - Debian 13 (Trixie)
+  - Ubuntu 26.04 LTS (Resolute Raccoon)"
+      ;;
+  esac
+
+  export DISTRO DISTRO_LABEL
+}
+
+detect_os
 
 # ==============================================================================
 # systemd user session handling (fixes the pct enter / pct exec / su problem)
@@ -183,6 +240,7 @@ export SELKIES_LOGGING_ACTIVE=1
 exec > >(tee -a "$INSTALL_LOG") 2>&1
 
 echo "=== Starting Selkies (Wayland) + Pelorus installation on LXC ($(date -Is)) ==="
+log "Operating system : $DISTRO_LABEL"
 log "Logging full installation output to: $INSTALL_LOG"
 
 # Session-repair-only mode
@@ -301,17 +359,34 @@ touch ~/.config/rclone/rclone.conf
 sudo touch /root/.config/rclone/rclone.conf
 
 # 5. Install system packages
-if [ "$ARCH" = "x86_64" ]; then
-  echo "--- Enabling APT non-free component for x86_64 GPU drivers ---"
-  if [ -f /etc/apt/sources.list.d/debian.sources ]; then
-    sudo sed -i -E '/^Components:/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list.d/debian.sources
+if [ "$DISTRO" = "debian" ]; then
+  if [ "$ARCH" = "x86_64" ]; then
+    echo "--- Enabling APT non-free component for x86_64 GPU drivers (Debian) ---"
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+      sudo sed -i -E '/^Components:/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list.d/debian.sources
+    fi
+    if [ -f /etc/apt/sources.list ]; then
+      sudo sed -i -E '/^[[:space:]]*deb(-src)?[[:space:]]+.*debian/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list
+    fi
   fi
-  if [ -f /etc/apt/sources.list ]; then
-    sudo sed -i -E '/^[[:space:]]*deb(-src)?[[:space:]]+.*debian/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list
+elif [ "$DISTRO" = "ubuntu" ]; then
+  echo "--- Enabling Ubuntu universe and restricted repositories for GPU drivers ---"
+  sudo add-apt-repository -y universe 2>/dev/null || true
+  sudo add-apt-repository -y restricted 2>/dev/null || true
+  # Add Mozilla Team PPA to get a proper .deb Firefox instead of the Snap redirect
+  if [ "$DESKTOP_ENV" = "xfce" ]; then
+    echo "--- Adding Mozilla Team PPA for Firefox .deb package (Ubuntu) ---"
+    sudo add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null || warn "Failed to add Mozilla PPA; Firefox snap may be used instead."
+    # Prioritize the .deb over the snap redirect
+    sudo tee /etc/apt/preferences.d/mozilla-firefox > /dev/null <<'APT_PREF'
+Package: firefox*
+Pin: release o=LP-PPA-mozillateam
+Pin-Priority: 1001
+APT_PREF
   fi
 fi
 
-echo "--- Updating repositories and installing system packages for $DESKTOP_ENV ---"
+echo "--- Updating repositories and installing system packages for $DESKTOP_ENV on $DISTRO_LABEL ---"
 sudo apt update
 
 COMMON_PACKAGES=(
@@ -323,22 +398,43 @@ COMMON_PACKAGES=(
 
 ARCH_PACKAGES=()
 if [ "$ARCH" = "x86_64" ]; then
-  # Full Intel VA-API driver with hardware encoding and video processing support (e.g. HD Graphics 530 / Gen8+)
-  ARCH_PACKAGES=(
-    vainfo libva2 libva-drm2 libva-wayland2 mesa-va-drivers intel-media-va-driver-non-free
-  )
+  if [ "$DISTRO" = "debian" ]; then
+    # Full Intel VA-API driver with hardware encoding and video processing support (e.g. HD Graphics 530 / Gen8+)
+    ARCH_PACKAGES=(
+      vainfo libva2 libva-drm2 libva-wayland2 mesa-va-drivers intel-media-va-driver-non-free
+    )
+  elif [ "$DISTRO" = "ubuntu" ]; then
+    # Ubuntu ships intel-media-va-driver in the restricted repo (no -non-free suffix)
+    ARCH_PACKAGES=(
+      vainfo libva2 libva-drm2 libva-wayland2 mesa-va-drivers intel-media-va-driver
+    )
+  fi
 fi
 
 if [ "$DESKTOP_ENV" = "xfce" ]; then
-  DE_PACKAGES=(
-    xfce4 xfce4-terminal xfce4-goodies firefox-esr labwc mate-polkit adwaita-icon-theme
-  )
+  if [ "$DISTRO" = "ubuntu" ]; then
+    DE_PACKAGES=(
+      xfce4 xfce4-terminal xfce4-goodies firefox labwc mate-polkit adwaita-icon-theme
+    )
+  else
+    DE_PACKAGES=(
+      xfce4 xfce4-terminal xfce4-goodies firefox-esr labwc mate-polkit adwaita-icon-theme
+    )
+  fi
 else
-  # Exclude plasma-nm and plasma-welcome (marked with trailing '-') from kde-plasma-desktop recommendations
-  DE_PACKAGES=(
-    kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
-    plasma-nm- plasma-welcome-
-  )
+  if [ "$DISTRO" = "ubuntu" ]; then
+    # Ubuntu: plasma-welcome does not exist as a separate package; skip exclusion marker
+    DE_PACKAGES=(
+      kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
+      plasma-nm-
+    )
+  else
+    # Exclude plasma-nm and plasma-welcome (marked with trailing '-') from kde-plasma-desktop recommendations
+    DE_PACKAGES=(
+      kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
+      plasma-nm- plasma-welcome-
+    )
+  fi
 fi
 
 sudo DEBIAN_FRONTEND=noninteractive apt install -yq "${COMMON_PACKAGES[@]}" "${ARCH_PACKAGES[@]}" "${DE_PACKAGES[@]}"
@@ -398,7 +494,16 @@ verify_dri_groups
 # 8. Pull and extract Selkies components via udocker
 echo "--- Pulling Selkies image via udocker ---"
 pipx install udocker 2>/dev/null || pipx upgrade udocker 2>/dev/null || true
-SELKIES_IMAGE="${SELKIES_IMAGE:-lsiobase/selkies:debiantrixie-60ce2ea6-ls152}"
+# Select the appropriate LinuxServer.io Selkies base image for the detected OS
+if [ -z "${SELKIES_IMAGE:-}" ]; then
+  if [ "$DISTRO" = "ubuntu" ]; then
+    SELKIES_IMAGE="lsiobase/selkies:ubunturesolute-87420d8d-ls41"
+    echo "[INFO] Using Ubuntu Resolute Raccoon Selkies image: $SELKIES_IMAGE"
+  else
+    SELKIES_IMAGE="lsiobase/selkies:debiantrixie-60ce2ea6-ls152"
+    echo "[INFO] Using Debian Trixie Selkies image: $SELKIES_IMAGE"
+  fi
+fi
 export SELKIES_TAG="${SELKIES_IMAGE#*:}"
 udocker pull "$SELKIES_IMAGE"
 udocker create --name=selkies_tmp "$SELKIES_IMAGE"
@@ -512,14 +617,21 @@ fi
 sed -i '/^DESKTOP_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
 echo "DESKTOP_ENVIRONMENT=$DESKTOP_ENV" >> ~/.config/selkies/selkies.env
 
+# Build a human-readable OS prefix for the window title
+if [ "$DISTRO" = "ubuntu" ]; then
+  OS_TITLE_PREFIX="Ubuntu-26.04"
+else
+  OS_TITLE_PREFIX="Debian-13"
+fi
+
 if [ "$DESKTOP_ENV" = "xfce" ]; then
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
   echo 'PELORUS_ENVIRONMENT="XFCE Desktop (Linux)"' >> ~/.config/selkies/selkies.env
-  sed -i 's/^TITLE=.*/TITLE=Debian-13 (XFCE)/' ~/.config/selkies/selkies.env
+  sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (XFCE)/" ~/.config/selkies/selkies.env
 else
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
   echo 'PELORUS_ENVIRONMENT="KDE Plasma Desktop (Linux)"' >> ~/.config/selkies/selkies.env
-  sed -i 's/^TITLE=.*/TITLE=Debian-13 (KDE)/' ~/.config/selkies/selkies.env
+  sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (KDE)/" ~/.config/selkies/selkies.env
 fi
 
 # Ensure critical ports and settings are present in existing configuration

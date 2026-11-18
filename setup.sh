@@ -287,6 +287,16 @@ touch ~/.config/rclone/rclone.conf
 sudo touch /root/.config/rclone/rclone.conf
 
 # 5. Install system packages
+if [ "$ARCH" = "x86_64" ]; then
+  echo "--- Enabling APT non-free component for x86_64 GPU drivers ---"
+  if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+    sudo sed -i -E '/^Components:/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list.d/debian.sources
+  fi
+  if [ -f /etc/apt/sources.list ]; then
+    sudo sed -i -E '/^[[:space:]]*deb(-src)?[[:space:]]+.*debian/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list
+  fi
+fi
+
 echo "--- Updating repositories and installing system packages for $DESKTOP_ENV ---"
 sudo apt update
 
@@ -296,6 +306,14 @@ COMMON_PACKAGES=(
   at-spi2-core dbus-user-session wl-clipboard python3 python3-pip
   python3-gi python3-gi-cairo gir1.2-atspi-2.0 gir1.2-gtk-3.0
 )
+
+ARCH_PACKAGES=()
+if [ "$ARCH" = "x86_64" ]; then
+  # Full Intel VA-API driver with hardware encoding and video processing support (e.g. HD Graphics 530 / Gen8+)
+  ARCH_PACKAGES=(
+    vainfo libva2 libva-drm2 libva-wayland2 mesa-va-drivers intel-media-va-driver-non-free
+  )
+fi
 
 if [ "$DESKTOP_ENV" = "xfce" ]; then
   DE_PACKAGES=(
@@ -307,7 +325,7 @@ else
   )
 fi
 
-sudo DEBIAN_FRONTEND=noninteractive apt install -yq "${COMMON_PACKAGES[@]}" "${DE_PACKAGES[@]}"
+sudo DEBIAN_FRONTEND=noninteractive apt install -yq "${COMMON_PACKAGES[@]}" "${ARCH_PACKAGES[@]}" "${DE_PACKAGES[@]}"
 sudo apt clean
 
 # After dbus-user-session is installed: make sure the user session works
@@ -319,8 +337,47 @@ if ! command -v rclone >/dev/null 2>&1; then
   curl -fsSL https://rclone.org/install.sh | sudo bash
 fi
 
-# 7. Add user to audio and video groups
-sudo usermod -aG audio,video "$USER"
+# 7. Add user to audio, video, and render groups & verify /dev/dri group IDs
+sudo groupadd -f video
+sudo groupadd -f render
+sudo usermod -aG audio,video,render "$USER"
+
+verify_dri_groups() {
+  if [ ! -d /dev/dri ]; then
+    log "No /dev/dri directory present (GPU passthrough not configured yet)."
+    return 0
+  fi
+
+  local video_gid render_gid dev expected_grp expected_gid dev_gid dev_grp has_error=0
+  video_gid="$(getent group video | cut -d: -f3)"
+  render_gid="$(getent group render | cut -d: -f3)"
+  log "Checking /dev/dri device group IDs (container groups: video=$video_gid, render=$render_gid)..."
+
+  shopt -s nullglob
+  for dev in /dev/dri/card* /dev/dri/renderD*; do
+    case "$(basename "$dev")" in
+      card*)    expected_grp="video";  expected_gid="$video_gid" ;;
+      renderD*) expected_grp="render"; expected_gid="$render_gid" ;;
+      *)        continue ;;
+    esac
+
+    dev_gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
+    dev_grp="$(stat -c '%G' "$dev" 2>/dev/null || true)"
+
+    if [ "$dev_gid" = "$expected_gid" ]; then
+      echo "[OK] $dev has correct group '$expected_grp' (GID $dev_gid)."
+    else
+      echo "[ERROR] Invalid group on $dev: found '$dev_grp' (GID $dev_gid), expected '$expected_grp' (GID $expected_gid)." >&2
+      has_error=1
+    fi
+  done
+  shopt -u nullglob
+
+  if [ "$has_error" -eq 1 ]; then
+    echo "[ERROR] Invalid groups on devices in /dev/dri." >&2
+  fi
+}
+verify_dri_groups
 
 # 8. Pull and extract Selkies components via udocker
 echo "--- Pulling Selkies image via udocker ---"

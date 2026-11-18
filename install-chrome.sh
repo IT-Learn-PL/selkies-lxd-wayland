@@ -68,12 +68,18 @@ if [ "$FLAGS_ONLY" != "1" ]; then
   sudo -v || die "User '$USER' does not have sudo privileges."
 
   # ---------- Packages ----------
-  log "Installing VA-API drivers and prerequisites..."
+  log "Enabling APT non-free component and installing VA-API drivers..."
+  if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+    sudo sed -i -E '/^Components:/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list.d/debian.sources
+  fi
+  if [ -f /etc/apt/sources.list ]; then
+    sudo sed -i -E '/^[[:space:]]*deb(-src)?[[:space:]]+.*debian/ { /(^|[[:space:]])non-free([[:space:]]|$)/! s/$/ non-free/ }' /etc/apt/sources.list
+  fi
   sudo apt update
-  # Mesa VA-API (AMD) and Intel media driver (Gen8+); vainfo for diagnostics
+  # Mesa VA-API (AMD) and full non-free Intel media driver with encoding/video processing support (Gen8+, e.g. HD Graphics 530); vainfo for diagnostics
   sudo DEBIAN_FRONTEND=noninteractive apt install -yq \
     curl gnupg ca-certificates vainfo libva2 libva-drm2 libva-wayland2 \
-    mesa-va-drivers intel-media-va-driver \
+    mesa-va-drivers intel-media-va-driver-non-free \
     || warn "Some VA-API packages failed to install - GPU video decoding may be unavailable."
 
   # ---------- Google APT repository ----------
@@ -89,11 +95,10 @@ if [ "$FLAGS_ONLY" != "1" ]; then
   sudo DEBIAN_FRONTEND=noninteractive apt install -yq google-chrome-stable
   sudo apt clean
 
-  # Access to /dev/dri render nodes (relevant only with GPU passthrough)
-  if getent group render >/dev/null 2>&1; then
-    sudo usermod -aG render "$USER"
-  fi
-  sudo usermod -aG video "$USER"
+  # Access to /dev/dri card* (video) and renderD* (render) nodes
+  sudo groupadd -f video
+  sudo groupadd -f render
+  sudo usermod -aG video,render "$USER"
 fi
 
 [ -x /usr/bin/google-chrome-stable ] || die "google-chrome-stable is not installed (run without --flags-only first)."
@@ -124,7 +129,38 @@ else
 fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database ~/.local/share/applications 2>/dev/null || true
 
-# ---------- GPU check ----------
+# ---------- GPU & /dev/dri group ID check ----------
+if [ -d /dev/dri ]; then
+  video_gid="$(getent group video | cut -d: -f3)"
+  render_gid="$(getent group render | cut -d: -f3)"
+  dri_error=0
+  log "Checking /dev/dri device group IDs (container groups: video=$video_gid, render=$render_gid)..."
+
+  shopt -s nullglob
+  for dev in /dev/dri/card* /dev/dri/renderD*; do
+    case "$(basename "$dev")" in
+      card*)    expected_grp="video";  expected_gid="$video_gid" ;;
+      renderD*) expected_grp="render"; expected_gid="$render_gid" ;;
+      *)        continue ;;
+    esac
+
+    dev_gid="$(stat -c '%g' "$dev" 2>/dev/null || true)"
+    dev_grp="$(stat -c '%G' "$dev" 2>/dev/null || true)"
+
+    if [ "$dev_gid" = "$expected_gid" ]; then
+      log "[OK] $dev has correct group '$expected_grp' (GID $dev_gid)."
+    else
+      echo "[ERROR] Invalid group on $dev: found '$dev_grp' (GID $dev_gid), expected '$expected_grp' (GID $expected_gid)." >&2
+      dri_error=1
+    fi
+  done
+  shopt -u nullglob
+
+  if [ "$dri_error" -eq 1 ]; then
+    echo "[ERROR] Invalid groups on devices in /dev/dri." >&2
+  fi
+fi
+
 if ls /dev/dri/renderD* >/dev/null 2>&1; then
   node="$(ls /dev/dri/renderD* | head -n1)"
   log "GPU render node found: $node"

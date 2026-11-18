@@ -13,8 +13,9 @@ Based on [Selkies Base Images from LinuxServer.io](https://github.com/linuxserve
   - **KDE Plasma**: Uses **KWin Wayland** (nested client to `wayland-1`, hosting `wayland-0` and XWayland).
   - **XFCE**: Uses **Labwc** (wlroots-based stacking compositor nested to `wayland-1`, hosting `wayland-0` and XWayland).
 - **XWayland**: Provides compatibility for legacy X11 applications.
-- **Pelorus**: AI navigation agent (FastAPI on port 5100, proxied via Nginx at `/pelorus/`), collecting window state and accessibility trees via AT-SPI2 / D-Bus, dispatching input actions to the Pixelflux Computer Use API (port 5000).
+- [Pelorus](https://docs.linuxserver.io/selkies/components/pelorus/) : AI navigation agent (FastAPI on port 5100, proxied via Nginx at `/pelorus/`), collecting window state and accessibility trees via AT-SPI2 / D-Bus, dispatching input actions to the Pixelflux Computer Use API (port 5000).
 - **PulseAudio**: Audio handling with virtual null-sinks `output` and `input`.
+- [Fast Installing Applications](https://docs.linuxserver.io/selkies/user-guide/installing-apps/) : persistent user installed apps with [proot-apps](https://github.com/linuxserver/proot-apps) (`proot-apps install filezilla`).
 
 ---
 

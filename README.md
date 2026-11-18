@@ -1,41 +1,112 @@
 # selkies-lxd-wayland (Wayland + Pelorus)
 
-Installation and setup scripts for Selkies in native **Wayland** mode with **Pelorus** AI navigator for **LXC/LXD** containers. Supports **KDE Plasma** and **XFCE**.
+High-performance installation and setup scripts for running **Selkies** WebRTC desktop streaming in native **Wayland** mode with the **Pelorus** AI navigator inside **LXC / LXD / Proxmox VE** containers.
 
-Based on [Selkies Base Images from LinuxServer.io](https://github.com/linuxserver/docker-baseimage-selkies), but runs natively inside an LXC container under `systemd --user` control without requiring Docker.
+Supports both **KDE Plasma** and **XFCE**, running under native `systemd --user` session management without requiring Docker or nested container engines.
+
+---
+
+## Key Features
+
+- **Native Wayland Streaming**: Powered by Pixelflux (Smithay compositor) listening on socket `wayland-1` via WebRTC and HTTPS.
+- **Nested Compositors**:
+  - **KDE Plasma**: Uses **KWin Wayland** nested client on `wayland-1`, hosting `wayland-0` and XWayland.
+  - **XFCE**: Uses **Labwc** (wlroots-based stacking compositor) nested client on `wayland-1`, hosting `wayland-0` and XWayland.
+- **Pelorus AI Navigation Agent**: Integrated FastAPI agent (port 5100, reverse-proxied at `/pelorus/`), reading window states and accessibility trees via AT-SPI2 / D-Bus and executing actions through Pixelflux's token-authenticated Computer Use API (port 5000).
+- **Proxmox & LXD Native**: Runs as an unprivileged or privileged LXC container; handles `systemd --user` sessions automatically even when initiated via `pct enter` or `su`.
+- **Hardware GPU Acceleration & Video Decoding**:
+  - Automatic `/dev/dri` device verification (`video` and `render` group IDs).
+  - Intel VA-API (`intel-media-va-driver-non-free`) and AMD Mesa drivers for hardware video acceleration.
+  - Software rendering fallback (`KWIN_COMPOSE=Q` with multi-threaded `llvmpipe`) when no GPU is attached.
+- **Google Chrome Integration**: Optional automated installation with native Wayland flags, basic password store, and VA-API hardware decoding enabled.
+- **Persistent User Applications (`proot-apps`)**: Pre-configured support for user-level rootless applications, accessible directly from the Selkies web sidebar ("Apps" menu).
+- **Audio Redirection**: Clean PulseAudio architecture with virtual null sinks (`output` and `input`), while PipeWire is automatically masked to prevent sound server conflicts.
+- **Gamepad / Joystick Passthrough**: Ready-to-use host script to pass gamepad devices into the container.
 
 ---
 
 ## Architecture Overview
 
-- **Pixelflux (Smithay)**: In-process Wayland compositor inside the Selkies daemon listening on socket `wayland-1` (WebRTC / HTTPS streaming).
-- **Nested Wayland Compositor**:
-  - **KDE Plasma**: Uses **KWin Wayland** (nested client to `wayland-1`, hosting `wayland-0` and XWayland).
-  - **XFCE**: Uses **Labwc** (wlroots-based stacking compositor nested to `wayland-1`, hosting `wayland-0` and XWayland).
-- **XWayland**: Provides compatibility for legacy X11 applications.
-- [Pelorus](https://docs.linuxserver.io/selkies/components/pelorus/) : AI navigation agent (FastAPI on port 5100, proxied via Nginx at `/pelorus/`), collecting window state and accessibility trees via AT-SPI2 / D-Bus, dispatching input actions to the Pixelflux Computer Use API (port 5000).
-- **PulseAudio**: Audio handling with virtual null-sinks `output` and `input`.
-- [Fast Installing Applications](https://docs.linuxserver.io/selkies/user-guide/installing-apps/) : persistent user installed apps with [proot-apps](https://github.com/linuxserver/proot-apps) (`proot-apps install filezilla`).
+```
+                        +---------------------------------------+
+                        |           Web Browser Client          |
+                        | (Selkies WebRTC / Nginx HTTPS :3001)  |
+                        +-------------------+-------------------+
+                                            |
+                                            v
++---------------------------------------------------------------------------------------+
+| LXC Container                                                                         |
+|                                                                                       |
+|   +-------------------------------------------------------------------------------+   |
+|   | Nginx Reverse Proxy (Port 3000 HTTP / 3001 HTTPS)                             |   |
+|   |  - /           -> Selkies Web Client & WebSockets (:8082)                     |   |
+|   |  - /pelorus/   -> Pelorus AI Interface (:5100)                                |   |
+|   +---------------------------------------+---------------------------------------+   |
+|                                           |                                           |
+|   +---------------------------------------v---------------------------------------+   |
+|   | Selkies Streaming Daemon (Pixelflux / Smithay)                                |   |
+|   |  - WebRTC / WebSocket video & audio streamer (:8082)                          |   |
+|   |  - Provides root Wayland compositor socket: wayland-1                         |   |
+|   |  - Computer Use (CU) API (:5000) protected by PIXELFLUX_CU_TOKEN              |   |
+|   +---------------------------------------+---------------------------------------+   |
+|                                           | (Wayland socket: wayland-1)               |
+|   +---------------------------------------v---------------------------------------+   |
+|   | Nested Desktop Compositor (wayland-0)                                         |   |
+|   |  - KDE: KWin Wayland (kwin-xwayland.py)                                       |   |
+|   |  - XFCE: Labwc (wlroots)                                                      |   |
+|   |  - XWayland compatibility layer for legacy X11 applications                   |   |
+|   +-------------------+-----------------------------------+-----------------------+   |
+|                       |                                   |                           |
+|   +-------------------v--------------------+  +-----------v-----------------------+   |
+|   | Desktop Applications & User Session    |  | Pelorus AI Agent (:5100)          |   |
+|   |  - KDE Plasma (plasmashell) / XFCE4    |  |  - Accessibility Tree (AT-SPI2)   |   |
+|   |  - Google Chrome / Firefox / foot      |  |  - Dispatches actions to :5000    |   |
+|   |  - proot-apps (user space packages)    |  |  - LLM: Ollama / OpenAI / Gemini  |   |
+|   +----------------------------------------+  +-----------------------------------+   |
+|                                                                                       |
+|   +-------------------------------------------------------------------------------+   |
+|   | Audio Daemon (PulseAudio)                                                     |   |
+|   |  - Virtual null-sinks: output (sink) and input (source)                       |   |
+|   +-------------------------------------------------------------------------------+   |
++---------------------------------------------------------------------------------------+
+```
 
 ---
 
-## Requirements
+## Requirements & Prerequisites
 
-1. **LXC/LXD Container** (Debian 13 Trixie or compatible)
-2. **Supported Architectures**: `x86_64` or `aarch64`.
-3. **Optional GPU Acceleration**:
-   - By default, software rendering is enabled (`KWIN_COMPOSE=Q`).
-   - If GPU passthrough is configured from the LXD host:
-     ```bash
-     lxc config device add <container_name> gpu gpu
-     ```
-     Set `KWIN_COMPOSE=O2` (OpenGL) in `~/.config/selkies/selkies.env`.
+### 1. Supported Environments
+- **Host**: Proxmox VE, LXD, or vanilla LXC.
+- **Container Distribution**: Debian 13 (Trixie) or Debian-compatible distributions.
+- **CPU Architectures**: `x86_64` (AMD64) or `aarch64` (ARM64). *Note: Google Chrome installation is available on `x86_64` only.*
+
+### 2. Proxmox VE Container Configuration
+For Proxmox VE containers, ensure `nesting` and `keyctl` features are enabled (required for `systemd --user` session bus and lingering):
+
+```bash
+pct set <CTID> --features nesting=1,keyctl=1
+pct reboot <CTID>
+```
+
+### 3. GPU Acceleration (Optional)
+By default, the installer configures software rendering (`KWIN_COMPOSE=Q`) with multi-threaded `llvmpipe`, ensuring smooth execution on CPU-only hosts.
+
+If GPU passthrough is desired:
+- **LXD**:
+  ```bash
+  lxc config device add <container_name> gpu gpu
+  ```
+- **Proxmox VE**: Map `/dev/dri/card*` and `/dev/dri/renderD*` devices into the container and ensure the container's `video` and `render` group IDs match the host.
+- The installer automatically validates `/dev/dri` permissions and GID mapping during installation.
+- Switch to OpenGL rendering by setting `KWIN_COMPOSE=O2` in `~/.config/selkies/selkies.env`.
 
 ---
 
 ## Installation
 
-Inside the LXC container (as a regular user with `sudo` privileges):
+### Quick Start
+
+Inside the LXC container as a regular user with `sudo` permissions (or as root; `setup.sh` will automatically switch to the designated user):
 
 ```bash
 git clone https://github.com/TranceEX/selkies-lxd-wayland.git
@@ -43,127 +114,225 @@ cd selkies-lxd-wayland
 bash setup.sh
 ```
 
-You can select the Desktop Environment interactively during setup, or specify it via argument or environment variable:
+During interactive execution, the installer prompts you for:
+1. **Desktop Environment**: `1` for KDE Plasma (default) or `2` for XFCE (with Labwc).
+2. **Google Chrome**: Option to install Google Chrome with Wayland & VA-API acceleration (x86_64 only).
+
+All installation output is mirrored in real time to `/tmp/selkies-lxd-wayland-install.log`.
+
+---
+
+### Command-Line Arguments & Non-Interactive Usage
+
+You can automate installation or select options via command-line arguments:
 
 ```bash
-# Install with XFCE (Wayland + Labwc)
-DESKTOP_ENV=xfce bash setup.sh
-# or
-bash setup.sh xfce
+# Install KDE Plasma with Google Chrome
+bash setup.sh kde --with-chrome
 
-# Install with KDE Plasma (default)
-DESKTOP_ENV=kde bash setup.sh
-# or
-bash setup.sh kde
+# Install XFCE without Google Chrome
+bash setup.sh xfce --no-chrome
+
+# Repair or reconfigure only systemd --user services without reinstalling packages
+bash setup.sh --services-only
+
+# Check and fix only the systemd user session (e.g., after pct enter)
+bash setup.sh --fix-session
 ```
 
-The script will automatically:
+#### Available CLI Arguments:
+| Argument | Description |
+|---|---|
+| `kde` / `xfce` | Selects target desktop environment (`kde` = KDE Plasma 6, `xfce` = XFCE 4 with Labwc). |
+| `--with-chrome` | Automatically installs Google Chrome (x86_64 only) with hardware decoding. |
+| `--no-chrome` | Skips Google Chrome installation prompt. |
+| `--services-only` | Skips package downloads and only writes service files and configuration. |
+| `--fix-session` | Diagnoses and repairs the `systemd --user` session bus, then exits. |
 
-- Verify CPU architecture (`x86_64` or `aarch64`).
-- Install system packages for the chosen desktop environment (KDE Plasma or XFCE + Labwc), Nginx, PulseAudio, and utilities.
-- Pull the Selkies image via udocker and extract the input interposer (`selkies_input_interposer.so`), `/lsiopy`, and web assets.
-- Configure Nginx with SSL certificates and Pelorus reverse proxy.
-- Install and enable `systemd --user` services (`pulseaudio`, `selkies`, `desktop`).
+#### Supported Environment Variables:
+| Variable | Default | Description |
+|---|---|---|
+| `DESKTOP_ENV` | `kde` | Target desktop environment (`kde` or `xfce`). |
+| `INSTALL_CHROME` | `no` | Install Google Chrome (`yes` or `no`). |
+| `PASSWORD` | *(empty)* | Sets HTTP Basic Authentication password for Nginx web access. |
+| `SETUP_USER` | *(auto)* | Target username when script is executed as `root` (e.g. from `pct enter`). |
+| `CUSTOM_PORT` | `3000` | Nginx HTTP port. |
+| `CUSTOM_HTTPS_PORT` | `3001` | Nginx HTTPS port. |
+| `CUSTOM_WS_PORT` | `8082` | Selkies backend WebSocket port. |
+| `SUBFOLDER` | `/` | Web application root subfolder. |
+| `DISABLE_IPV6` | `true` | Disables IPv6 listener in Nginx. |
+| `PELORUS` | `true` | Enables Pelorus AI navigation server. |
+
+---
+
+## Google Chrome Installer (`install-chrome.sh`)
+
+Google Chrome can be installed either via `setup.sh --with-chrome` or standalone using `install-chrome.sh`:
+
+```bash
+bash install-chrome.sh
+```
+
+### Highlights:
+- Configures Chrome policies at `/etc/opt/chrome/policies/managed/default.json` and flag overrides at `~/.config/chrome-flags.conf`.
+- Enables native Wayland windowing (`--ozone-platform-hint=auto` / `--ozone-platform=wayland`).
+- Enables VA-API hardware video decoding (`--enable-features=VaapiVideoDecodeLinuxGL,VaapiVideoDecoder`).
+- Sets `--password-store=basic` to prevent keyring prompts on headless/nested sessions.
+- Use `bash install-chrome.sh --flags-only` to refresh configuration files without reinstalling apt packages.
+
+---
+
+## Application Management with `proot-apps`
+
+The environment comes pre-configured with [proot-apps](https://github.com/linuxserver/proot-apps), enabling persistent rootless software installation:
+
+1. **Selkies Web Sidebar**:
+   - Applications installed via `proot-apps` appear under the **Apps** menu in the Selkies web interface.
+   - Powered by `selkies-proot` integration in `/usr/local/bin/selkies-proot`.
+2. **Command-Line Usage**:
+   ```bash
+   # List available applications
+   proot-apps list
+
+   # Install an application (e.g., FileZilla, Blender, LibreOffice)
+   proot-apps install filezilla
+
+   # Launch an installed application
+   proot-apps run filezilla
+   ```
 
 ---
 
 ## Configuration (`~/.config/selkies/selkies.env`)
 
-The main environment configuration file is installed at `~/.config/selkies/selkies.env`. Changes take effect after restarting user services (`systemctl --user restart selkies desktop`).
+User configuration is managed in `~/.config/selkies/selkies.env`. Changes take effect after restarting user services (`systemctl --user restart selkies desktop`).
 
-Key environment variables:
-- `DESKTOP_ENVIRONMENT=kde` - Target desktop: `kde` (KDE Plasma) or `xfce` (XFCE + Labwc).
-- `PIXELFLUX_WAYLAND=true` - Enables Wayland mode in Pixelflux.
-- `PIXELFLUX_CU=5000` - Pixelflux Computer Use API port (required by Pelorus).
-- `PIXELFLUX_CU_TOKEN` - Bearer token protecting the Pixelflux Computer Use API (generated automatically by `setup.sh`).
-- `SELKIES_COMMAND_ENABLED=true` - Enables WebSocket command messages required for the Selkies 2.2+ sidebar application launcher.
-- `PELORUS=true` - Activates the Pelorus agent and web UI.
-- `PELORUS_PROVIDER` - LLM provider (`ollama`, OpenAI-compatible, or `gemini`).
-- `PELORUS_ENDPOINT` - Model API endpoint URL (e.g. `http://localhost:11434`).
-- `PELORUS_MODEL` - Model name (e.g. `gemma4:12b`).
-- `PELORUS_API_KEY` - Optional API key.
-- `KWIN_COMPOSE=Q` - Compositor backend (`Q` for software rendering, `O2` for OpenGL with GPU passthrough).
+### Core Variables
 
-Pelorus server configurations are stored in `/config/agent/config.toml` and can also be modified at runtime via the `/pelorus/` web interface.
+| Section | Variable | Default | Description |
+|---|---|---|---|
+| **Compositor** | `DESKTOP_ENVIRONMENT` | `kde` | Desktop session: `kde` (KDE Plasma) or `xfce` (XFCE + Labwc). |
+| | `KWIN_COMPOSE` | `Q` | Compositor backend: `Q` (software rendering via QPainter/pixman) or `O2` (OpenGL for GPU passthrough). |
+| | `PIXELFLUX_WAYLAND` | `true` | Enables Smithay Wayland compositor inside Pixelflux. |
+| | `WAYLAND_DISPLAY` | `wayland-1` | Socket hosted by Pixelflux for nested compositor clients. |
+| | `SELKIES_APP_WAYLAND_DISPLAY` | `wayland-0` | Socket hosted by KWin / Labwc for session applications. |
+| **Streaming** | `CUSTOM_WS_PORT` / `SELKIES_PORT` | `8082` | WebSocket port used by Selkies daemon and Nginx proxy. |
+| | `SELKIES_ENCODER` | `h264enc` | Video encoder (`h264enc`, `h265enc`, `vp8enc`, `vp9enc`, `av1enc`, `jpeg`). |
+| | `SELKIES_FRAMERATE` | `60` | Target stream frame rate. |
+| | `SELKIES_COMMAND_ENABLED` | `true` | Enables WebSocket commands required for Selkies 2.2+ sidebar launcher. |
+| **Pelorus AI** | `PELORUS` | `true` | Activates Pelorus AI navigator and UI. |
+| | `PELORUS_PORT` | `5100` | Port for Pelorus FastAPI server. |
+| | `PIXELFLUX_CU` | `5000` | Pixelflux Computer Use API port. |
+| | `PIXELFLUX_CU_TOKEN` | *(auto-generated)* | 32-byte secret Bearer token protecting the Computer Use API. |
+| | `PELORUS_PROVIDER` | `ollama` | Default LLM provider (`ollama`, OpenAI-compatible, or `gemini`). |
+| | `PELORUS_ENDPOINT` | `http://localhost:11434` | Endpoint URL for the LLM provider. |
+| | `PELORUS_MODEL` | `gemma4:12b` | Model name. |
+| | `PELORUS_API_KEY` | `""` | Optional LLM API key. |
+
+Pelorus agent runtime settings can also be modified in `/config/agent/config.toml` or via the web UI at `/pelorus/`.
 
 ---
 
 ## Security Notice
 
 > [!WARNING]
-> The **Pelorus** agent listens on port `5100` without built-in authentication, and Pixelflux Computer Use listens on port `5000`. This grants full desktop control to anyone who can connect to these ports.
+> - The **Pelorus** agent listens on port `5100` without upstream authentication.
+> - The **Pixelflux Computer Use API** listens on port `5000` and allows simulated mouse and keyboard input and screen scraping. It is guarded by `PIXELFLUX_CU_TOKEN`.
+> - **Do not expose ports 5000 or 5100 to public networks.**
 
-Security recommendations:
-1. **Never expose ports 5000 or 5100 directly to external networks.**
-2. Access Pelorus solely via Nginx at `https://<ip>:3001/pelorus/`.
-3. To enable HTTP Basic Authentication, set the `PASSWORD` variable before running `setup.sh`:
+### Recommended Security Practices:
+1. Access the desktop and Pelorus strictly through Nginx over HTTPS (`https://<container_ip>:3001/` and `https://<container_ip>:3001/pelorus/`).
+2. Secure web access with HTTP Basic Authentication during setup:
    ```bash
-   PASSWORD="your_secure_password" bash setup.sh
+   PASSWORD="YourStrongPassword" bash setup.sh
    ```
-4. LLM provider API keys are saved in `/config/agent/config.toml` - ensure proper user file permissions.
+3. Secure LLM provider credentials stored in `/config/agent/config.toml` by maintaining strict file permissions (`chmod 600`).
 
 ---
 
-## Joystick / Gamepad Setup
+## Gamepad / Joystick Passthrough
 
-To use game controllers inside the container, execute the following script on the **LXD host** before starting the container session:
+To use physical controllers (Xbox, DualShock, generic USB joysticks) inside the container:
+
+Run the included helper script on the **LXD / Proxmox host** before starting your session:
 
 ```bash
 bash 00-lxd-host-joystick.sh <container_name>
 ```
 
-This creates `/dev/input/js0-3` and `/dev/input/event1000-1003` device nodes and passes them into the specified container.
+This maps `/dev/input/js0-3` and `/dev/input/event1000-1003` into the container with appropriate permissions.
 
 ---
 
 ## Access URLs
 
-- **Selkies Desktop (HTTPS)**: `https://<container_ip>:3001/`
-- **Selkies Desktop (HTTP)**: `http://<container_ip>:3000/`
-- **Pelorus AI Interface**: `https://<container_ip>:3001/pelorus/`
-- **Pelorus OpenAPI Docs**: `https://<container_ip>:3001/pelorus/docs`
+| Interface | URL |
+|---|---|
+| **Selkies Desktop (HTTPS)** | `https://<container_ip>:3001/` |
+| **Selkies Desktop (HTTP)** | `http://<container_ip>:3000/` |
+| **Pelorus AI Navigator** | `https://<container_ip>:3001/pelorus/` |
+| **Pelorus FastAPI Documentation** | `https://<container_ip>:3001/pelorus/docs` |
 
 ---
 
 ## Verification & Troubleshooting
 
-Check services and logs after installation:
+### Service Verification Commands
 
 ```bash
-# 1. Check user systemd services status
-systemctl --user status pulseaudio selkies desktop
+# 1. Check status of systemd user services
+systemctl --user status selkies desktop pulseaudio
 
-# 2. Check Selkies logs (look for: "Socket listening on: wayland-1")
-journalctl --user -u selkies -n 80 --no-pager
+# 2. Check Nginx status
+sudo systemctl status nginx
 
-# 3. Check desktop session and KWin/Pelorus logs
+# 3. View Selkies streaming logs
+journalctl --user -u selkies -n 50 --no-pager
+
+# 4. View desktop and Pelorus logs
 journalctl --user -u desktop -n 80 --no-pager
 
-# 4. Check Wayland sockets (wayland-1 and wayland-0 should both exist)
+# 5. Check Wayland sockets (both wayland-1 and wayland-0 must exist)
 ls -l "$XDG_RUNTIME_DIR"/wayland-*
 
-# 5. Check open listening ports
+# 6. Verify listening network ports (:3000, :3001, :5000, :5100, :8082)
 ss -ltnp | grep -E ':(3000|3001|5000|5100|8082)\b'
 
-# 6. Test Nginx configuration and HTTPS response
-sudo nginx -t && curl -skI https://localhost:3001/ | head -n 5
+# 7. Test Nginx HTTPS endpoint
+curl -skI https://localhost:3001/ | head -n 5
 
-# 7. Verify Pelorus window detection
+# 8. Test Pelorus accessibility tree window detection
 curl -s http://127.0.0.1:5100/api/windows
 ```
 
-### Common Issues:
+For a comprehensive cheatsheet of troubleshooting steps and commands, see [troubleshoot.txt](troubleshoot.txt).
 
-- **Black screen in browser**: Ensure `KWIN_COMPOSE=Q` is set in `~/.config/selkies/selkies.env` (for non-GPU LXC), then restart the desktop: `systemctl --user restart desktop`.
-- **502 Bad Gateway under `/pelorus/`**: Check that the desktop service spawned the Pelorus process (`pgrep -a pelorus`) and verify `PIXELFLUX_CU=5000` is present in `selkies.service`.
+### Common Issues & Solutions
+
+- **"Failed to start a systemd --user session" (when entering via `pct enter`)**:
+  - Run `bash setup.sh --fix-session`.
+  - Ensure the Proxmox container has nesting enabled: `pct set <CTID> --features nesting=1,keyctl=1`.
+- **Black screen in browser**:
+  - For containers without GPU passthrough, verify `KWIN_COMPOSE=Q` in `~/.config/selkies/selkies.env`.
+  - If changing `KWIN_COMPOSE`, remove cached settings (`rm -f ~/.config/kwinrc`) and restart the desktop: `systemctl --user restart desktop`.
+- **502 Bad Gateway under `/pelorus/`**:
+  - Check if the Pelorus process is running: `pgrep -a pelorus` or inspect `/tmp/pelorus.log`.
+  - Verify that `PIXELFLUX_CU=5000` is active and `selkies.service` is running.
+- **Missing Audio in Browser**:
+  - Confirm PulseAudio null sinks exist: `pactl list short sinks` (should show `output`).
+  - Make sure PipeWire is masked: `systemctl --user status pipewire` should report masked or inactive.
+
+---
 
 ## License & Acknowledgements
 
-This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**. See the [LICENSE](LICENSE) file for full details.
 
 ### Acknowledgements
-This project is based on, adapts, or utilizes components developed by the [LinuxServer.io](https://www.linuxserver.io/) team, specifically:
-- **Pelorus** ([docker-pelorus](https://github.com/linuxserver/docker-pelorus))
-- **Selkies** ([docker-selkies](https://github.com/linuxserver/docker-selkies))
 
-Special thanks to LinuxServer.io and the respective upstream contributors for their open-source work.
+This project builds upon, adapts, and integrates open-source components developed by the [LinuxServer.io](https://www.linuxserver.io/) team:
+- **Pelorus** ([docker-pelorus](https://github.com/linuxserver/docker-pelorus))
+- **Selkies Base Image** ([docker-baseimage-selkies](https://github.com/linuxserver/docker-baseimage-selkies))
+- **proot-apps** ([proot-apps](https://github.com/linuxserver/proot-apps))
+
+Special thanks to LinuxServer.io and the open-source community for their foundational work.

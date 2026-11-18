@@ -304,7 +304,7 @@ COMMON_PACKAGES=(
   acl curl git libepoxy0 libnginx-mod-http-fancyindex locales-all nginx pipx pulseaudio pulseaudio-utils ssl-cert unzip
   x11-xkb-utils xcvt xdotool xclip xsel xwayland
   at-spi2-core dbus-user-session wl-clipboard python3 python3-pip
-  python3-gi python3-gi-cairo gir1.2-atspi-2.0 gir1.2-gtk-3.0
+  python3-gi python3-gi-cairo gir1.2-atspi-2.0 gir1.2-gtk-3.0 foot
 )
 
 ARCH_PACKAGES=()
@@ -407,7 +407,13 @@ if [ -f "$SELKIES_ROOTFS/usr/bin/selkies-desktop" ]; then
 fi
 if [ -f "$SELKIES_ROOTFS/usr/local/bin/selkies-proot" ]; then
   sudo rclone copy -L "$SELKIES_ROOTFS/usr/local/bin/selkies-proot" /usr/local/bin/
+  # The LinuxServer image uses an s6-overlay shebang (with-contenv) that does not
+  # exist in a plain LXC without Docker. Without this fix, Selkies cannot run the
+  # startup check 'selkies-proot check' and hides the Apps section in the sidebar.
+  sudo sed -i '1s|^#!.*with-contenv.*|#!/bin/bash|' /usr/local/bin/selkies-proot
   sudo chmod 755 /usr/local/bin/selkies-proot
+else
+  echo "[WARNING] selkies-proot not found in the image - the Selkies Apps section will be hidden." >&2
 fi
 if [ -d "$SELKIES_ROOTFS/proot-apps" ]; then
   echo "--- Installing proot-apps for Selkies Apps menu ---"

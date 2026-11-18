@@ -17,6 +17,7 @@ set -eo pipefail
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+INSTALL_LOG="/tmp/selkies-lxd-wayland-install.log"
 
 FLAGS_ONLY=0
 ORIG_ARGS=("$@")
@@ -46,8 +47,12 @@ if [ "$(id -u)" -eq 0 ]; then
   id "$target" >/dev/null 2>&1 || die "User '$target' does not exist."
   chmod a+rx "$SCRIPT_DIR" 2>/dev/null || true
   chmod a+rx "$SCRIPT_DIR/$(basename "$0")" 2>/dev/null || true
+  if [ -e "$INSTALL_LOG" ]; then
+    chown "$target" "$INSTALL_LOG" 2>/dev/null || rm -f "$INSTALL_LOG" 2>/dev/null || true
+  fi
   envs=""
   [ -n "${CHROME_EXTRA_FLAGS:-}" ] && envs=" $(printf 'CHROME_EXTRA_FLAGS=%q' "$CHROME_EXTRA_FLAGS")"
+  [ -n "${SELKIES_LOGGING_ACTIVE:-}" ] && envs+=" $(printf 'SELKIES_LOGGING_ACTIVE=%q' "$SELKIES_LOGGING_ACTIVE")"
   args=""
   [ "${#ORIG_ARGS[@]}" -gt 0 ] && args="$(printf ' %q' "${ORIG_ARGS[@]}")"
   log "Switching to user '$target'..."
@@ -56,6 +61,16 @@ fi
 
 : "${USER:=$(id -un)}"
 export USER
+
+if [ "${SELKIES_LOGGING_ACTIVE:-0}" != "1" ]; then
+  if [ -e "$INSTALL_LOG" ] && [ ! -w "$INSTALL_LOG" ]; then
+    sudo chown "$USER:$(id -gn)" "$INSTALL_LOG" 2>/dev/null || sudo rm -f "$INSTALL_LOG" 2>/dev/null || true
+  fi
+  touch "$INSTALL_LOG" 2>/dev/null || true
+  export SELKIES_LOGGING_ACTIVE=1
+  exec > >(tee -a "$INSTALL_LOG") 2>&1
+  log "Logging Google Chrome installation output to: $INSTALL_LOG"
+fi
 
 # ---------- Preconditions ----------
 ARCH="$(uname -m)"

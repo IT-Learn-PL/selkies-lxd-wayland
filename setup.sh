@@ -20,6 +20,7 @@ set -eo pipefail
 # The script must run from its own directory (it copies files via relative paths)
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$SCRIPT_DIR"
+INSTALL_LOG="/tmp/selkies-lxd-wayland-install.log"
 
 # ---------- Argument parsing ----------
 SERVICES_ONLY="${SERVICES_ONLY:-0}"
@@ -64,8 +65,11 @@ reexec_as_user_if_root() {
   fi
   id "$target" >/dev/null 2>&1 || die "User '$target' does not exist."
 
-  # The user needs access to the scripts directory
+  # The user needs access to the scripts directory and the install log in /tmp
   chmod -R a+rX "$SCRIPT_DIR" 2>/dev/null || true
+  if [ -e "$INSTALL_LOG" ]; then
+    chown "$target" "$INSTALL_LOG" 2>/dev/null || rm -f "$INSTALL_LOG" 2>/dev/null || true
+  fi
 
   local envs="" v
   for v in DESKTOP_ENV INSTALL_CHROME CHROME_EXTRA_FLAGS PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
@@ -159,8 +163,6 @@ EOF
 # ==============================================================================
 # Main
 # ==============================================================================
-echo "=== Starting Selkies (Wayland) + Pelorus installation on LXC ==="
-
 reexec_as_user_if_root
 : "${USER:=$(id -un)}"
 export USER
@@ -170,6 +172,18 @@ command -v sudo >/dev/null 2>&1 || die "'sudo' not found. As root: apt install s
 if ! sudo -v; then
   die "User '$USER' does not have sudo privileges."
 fi
+
+# Set up full installation logging to /tmp/selkies-lxd-wayland-install.log
+if [ -e "$INSTALL_LOG" ] && [ ! -w "$INSTALL_LOG" ]; then
+  sudo chown "$USER:$(id -gn)" "$INSTALL_LOG" 2>/dev/null || sudo rm -f "$INSTALL_LOG" 2>/dev/null || true
+fi
+touch "$INSTALL_LOG"
+chmod 644 "$INSTALL_LOG" 2>/dev/null || true
+export SELKIES_LOGGING_ACTIVE=1
+exec > >(tee -a "$INSTALL_LOG") 2>&1
+
+echo "=== Starting Selkies (Wayland) + Pelorus installation on LXC ($(date -Is)) ==="
+log "Logging full installation output to: $INSTALL_LOG"
 
 # Session-repair-only mode
 if [ "$FIX_SESSION_ONLY" = "1" ]; then
@@ -320,8 +334,10 @@ if [ "$DESKTOP_ENV" = "xfce" ]; then
     xfce4 xfce4-terminal xfce4-goodies firefox-esr labwc mate-polkit adwaita-icon-theme
   )
 else
+  # Exclude plasma-nm and plasma-welcome (marked with trailing '-') from kde-plasma-desktop recommendations
   DE_PACKAGES=(
     kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
+    plasma-nm- plasma-welcome-
   )
 fi
 
@@ -591,7 +607,8 @@ systemctl --user daemon-reexec
 systemctl --user daemon-reload
 systemctl --user enable --now pulseaudio selkies desktop
 
-echo "=== Installation completed successfully! ==="
+echo "=== Installation completed successfully! ($(date -Is)) ==="
+echo "Installation log saved to: $INSTALL_LOG"
 echo "Access URLs:"
 echo "  Desktop: https://<container_ip>:3001/ or http://<container_ip>:3000/"
 echo "  Pelorus AI: https://<container_ip>:3001/pelorus/"

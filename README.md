@@ -143,8 +143,12 @@ cd selkies-lxd-wayland
 bash setup.sh
 ```
 
-During interactive execution, the installer prompts you for:
-1. **Desktop Environment**: `1` for KDE Plasma (default) or `2` for XFCE (with Labwc).
+During interactive execution, the installer detects any already installed desktop environment and prompts you for:
+1. **Desktop Environment & Installation Mode**:
+   - `1` for KDE Plasma full install (default)
+   - `2` for XFCE full install
+   - `3` for Selkies only using existing KDE Plasma (skips desktop packages)
+   - `4` for Selkies only using existing XFCE (skips desktop packages)
 2. **Google Chrome**: Option to install Google Chrome with Wayland & VA-API acceleration (x86_64 only).
 
 All installation output is mirrored in real time to `/tmp/selkies-lxd-wayland-install.log`.
@@ -162,6 +166,11 @@ bash setup.sh kde --with-chrome
 # Install XFCE without Google Chrome
 bash setup.sh xfce --no-chrome
 
+# Install Selkies only for an already installed desktop (skips DE package downloads)
+bash setup.sh kde --selkies-only
+# or auto-detect installed desktop:
+bash setup.sh --selkies-only
+
 # Install only required system packages and dependencies (skips Selkies & services)
 bash setup.sh kde --packages-only
 
@@ -178,6 +187,7 @@ bash setup.sh --fix-session
 | `kde` / `xfce` | Selects target desktop environment (`kde` = KDE Plasma 6, `xfce` = XFCE 4 with Labwc). |
 | `--with-chrome` | Automatically installs Google Chrome (x86_64 only) with hardware decoding. |
 | `--no-chrome` | Skips Google Chrome installation prompt. |
+| `--selkies-only` | Installs Selkies streaming components and services only, skipping desktop environment packages (for systems with an already installed desktop). |
 | `--packages-only` | Installs only required system packages and dependencies, then exits (skips Selkies image extraction, services, and configuration). |
 | `--services-only` | Skips package downloads and only writes service files and configuration. |
 | `--fix-session` | Diagnoses and repairs the `systemd --user` session bus, then exits. |
@@ -187,6 +197,7 @@ bash setup.sh --fix-session
 |---|---|---|
 | `DESKTOP_ENV` | `kde` | Target desktop environment (`kde` or `xfce`). |
 | `INSTALL_CHROME` | `no` | Install Google Chrome (`yes` or `no`). |
+| `SELKIES_ONLY` | `0` | Installs Selkies only without installing desktop environment packages (equivalent to `--selkies-only`). |
 | `PACKAGES_ONLY` | `0` | Installs only system packages and dependencies (equivalent to `--packages-only`). |
 | `SERVICES_ONLY` | `0` | Configures only services and environment files, skipping package installations (equivalent to `--services-only`). |
 | `PASSWORD` | *(empty)* | Sets HTTP Basic Authentication password for Nginx web access. |

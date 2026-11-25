@@ -9,17 +9,19 @@ set -eo pipefail
 #   - Ubuntu 26.04 LTS (Resolute Raccoon)
 #
 # Usage:
-#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--packages-only] [--services-only] [--fix-session]
+#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--selkies-only] [--packages-only] [--services-only] [--fix-session]
 #
 #   --with-chrome    installs Google Chrome via install-chrome.sh (x86_64 only)
 #   --no-chrome      skips Google Chrome installation without prompting
+#   --selkies-only   installs Selkies only, skipping desktop environment packages
+#                    (use when KDE or XFCE is already installed)
 #   --packages-only  installs only system packages and dependencies, then exits
 #   --services-only  skips package installation; only configures the
 #                    systemd --user services (useful after a failed install)
 #   --fix-session    only repairs/checks the systemd user session, then exits
 #
 # Variables:
-#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   PACKAGES_ONLY=0|1   SERVICES_ONLY=0|1
+#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   SELKIES_ONLY=0|1   PACKAGES_ONLY=0|1   SERVICES_ONLY=0|1
 #   PASSWORD=...           SETUP_USER=<user> (when running as root)
 # ==============================================================================
 
@@ -31,12 +33,14 @@ INSTALL_LOG="/tmp/selkies-lxd-wayland-install.log"
 # ---------- Argument parsing ----------
 PACKAGES_ONLY="${PACKAGES_ONLY:-0}"
 SERVICES_ONLY="${SERVICES_ONLY:-0}"
+SELKIES_ONLY="${SELKIES_ONLY:-0}"
 FIX_SESSION_ONLY=0
 ORIG_ARGS=("$@")
 for arg in "$@"; do
   case "$arg" in
     --packages-only|--package-only) PACKAGES_ONLY=1 ;;
     --services-only) SERVICES_ONLY=1 ;;
+    --selkies-only|--no-desktop|--skip-de) SELKIES_ONLY=1 ;;
     --fix-session)   FIX_SESSION_ONLY=1 ;;
     --with-chrome)   INSTALL_CHROME="yes" ;;
     --no-chrome)     INSTALL_CHROME="no" ;;
@@ -138,7 +142,7 @@ reexec_as_user_if_root() {
 
   local envs="" v
   for v in DESKTOP_ENV INSTALL_CHROME CHROME_EXTRA_FLAGS PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
-           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY PACKAGES_ONLY; do
+           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY PACKAGES_ONLY SELKIES_ONLY; do
     [ -n "${!v:-}" ] && envs+=" $(printf '%s=%q' "$v" "${!v}")"
   done
   local args=""
@@ -282,7 +286,20 @@ if [ "$SERVICES_ONLY" = "1" ]; then
   ensure_user_session hard
 else
 
-# 2. Select Desktop Environment (KDE or XFCE)
+# Detect whether a desktop environment is already installed on the system
+detect_installed_de() {
+  if command -v plasmashell >/dev/null 2>&1 || command -v startplasma-wayland >/dev/null 2>&1 || [ -f /usr/bin/plasmashell ]; then
+    echo "kde"
+  elif command -v xfce4-session >/dev/null 2>&1 || [ -f /usr/bin/xfce4-session ]; then
+    echo "xfce"
+  else
+    echo ""
+  fi
+}
+
+# 2. Select Desktop Environment (KDE or XFCE) and installation mode
+detected_de="$(detect_installed_de)"
+
 DESKTOP_ENV="${DESKTOP_ENV:-}"
 if [ -z "$DESKTOP_ENV" ] && [ -f ~/.config/selkies/selkies.env ]; then
   saved_de=$(grep "^DESKTOP_ENVIRONMENT=" ~/.config/selkies/selkies.env 2>/dev/null | cut -d= -f2- | tr -d ' "\r' || true)
@@ -290,19 +307,57 @@ if [ -z "$DESKTOP_ENV" ] && [ -f ~/.config/selkies/selkies.env ]; then
 fi
 
 if [ -z "$DESKTOP_ENV" ]; then
-  if [ -t 0 ]; then
+  if [ "$SELKIES_ONLY" = "1" ]; then
+    # In Selkies-only mode without explicit DE: use detected DE if available, or ask
+    if [ -n "$detected_de" ]; then
+      DESKTOP_ENV="$detected_de"
+      log "Auto-detected existing desktop environment for Selkies: $DESKTOP_ENV"
+    elif [ -t 0 ]; then
+      echo "--------------------------------------------------"
+      echo "Select existing Desktop Environment to integrate with Selkies:"
+      echo "  1) KDE Plasma (Wayland) [default]"
+      echo "  2) XFCE (Wayland + Labwc)"
+      echo "--------------------------------------------------"
+      read -rp "Enter choice [1-2, default 1]: " de_choice || de_choice=""
+      case "$de_choice" in
+        2|xfce|XFCE) DESKTOP_ENV="xfce" ;;
+        *)           DESKTOP_ENV="kde" ;;
+      esac
+    else
+      DESKTOP_ENV="kde"
+    fi
+  elif [ -t 0 ]; then
     echo "--------------------------------------------------"
-    echo "Select Desktop Environment to install:"
-    echo "  1) KDE Plasma (Wayland) [default]"
-    echo "  2) XFCE (Wayland + Labwc)"
+    if [ -n "$detected_de" ]; then
+      case "$detected_de" in
+        kde)  echo "Detected installed desktop: KDE Plasma (plasmashell)" ;;
+        xfce) echo "Detected installed desktop: XFCE (xfce4-session)" ;;
+        *)    echo "Detected installed desktop: $detected_de" ;;
+      esac
+    fi
+    echo "Select Desktop Environment / Installation Mode:"
+    echo "  1) Install KDE Plasma (Wayland) [default]"
+    echo "  2) Install XFCE (Wayland + Labwc)"
+    echo "  3) Selkies only with existing KDE Plasma (skip desktop packages)"
+    echo "  4) Selkies only with existing XFCE (skip desktop packages)"
     echo "--------------------------------------------------"
-    read -rp "Enter choice [1-2, default 1]: " de_choice || de_choice=""
+    read -rp "Enter choice [1-4, default 1]: " de_choice || de_choice=""
     case "$de_choice" in
       2|xfce|XFCE)
         DESKTOP_ENV="xfce"
+        SELKIES_ONLY=0
+        ;;
+      3)
+        DESKTOP_ENV="kde"
+        SELKIES_ONLY=1
+        ;;
+      4)
+        DESKTOP_ENV="xfce"
+        SELKIES_ONLY=1
         ;;
       *)
         DESKTOP_ENV="kde"
+        SELKIES_ONLY=0
         ;;
     esac
   else
@@ -318,7 +373,11 @@ case "${DESKTOP_ENV,,}" in
     DESKTOP_ENV="kde"
     ;;
 esac
-echo "[OK] Selected Desktop Environment: $DESKTOP_ENV"
+if [ "$SELKIES_ONLY" = "1" ]; then
+  echo "[OK] Selected Mode: Selkies only (using existing $DESKTOP_ENV desktop)"
+else
+  echo "[OK] Selected Desktop Environment: $DESKTOP_ENV (full install)"
+fi
 
 # 2b. Ask whether to install Google Chrome (x86_64 only)
 INSTALL_CHROME="${INSTALL_CHROME:-}"
@@ -381,8 +440,8 @@ elif [ "$DISTRO" = "ubuntu" ]; then
   echo "--- Enabling Ubuntu universe and restricted repositories for GPU drivers ---"
   sudo add-apt-repository -y universe 2>/dev/null || true
   sudo add-apt-repository -y restricted 2>/dev/null || true
-  # Add Mozilla Team PPA to get a proper .deb Firefox instead of the Snap redirect
-  if [ "$DESKTOP_ENV" = "xfce" ]; then
+  # Add Mozilla Team PPA to get a proper .deb Firefox instead of the Snap redirect (skip in Selkies-only mode)
+  if [ "$DESKTOP_ENV" = "xfce" ] && [ "$SELKIES_ONLY" != "1" ]; then
     echo "--- Adding Mozilla Team PPA for Firefox .deb package (Ubuntu) ---"
     sudo add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null || warn "Failed to add Mozilla PPA; Firefox snap may be used instead."
     # Prioritize the .deb over the snap redirect
@@ -394,7 +453,11 @@ APT_PREF
   fi
 fi
 
-echo "--- Updating repositories and installing system packages for $DESKTOP_ENV on $DISTRO_LABEL ---"
+if [ "$SELKIES_ONLY" = "1" ]; then
+  echo "--- Updating repositories and installing Selkies packages for existing $DESKTOP_ENV on $DISTRO_LABEL ---"
+else
+  echo "--- Updating repositories and installing system packages for $DESKTOP_ENV on $DISTRO_LABEL ---"
+fi
 sudo apt update
 
 COMMON_PACKAGES=(
@@ -419,29 +482,38 @@ if [ "$ARCH" = "x86_64" ]; then
   fi
 fi
 
-if [ "$DESKTOP_ENV" = "xfce" ]; then
-  if [ "$DISTRO" = "ubuntu" ]; then
-    DE_PACKAGES=(
-      xfce4 xfce4-terminal xfce4-goodies firefox labwc mate-polkit adwaita-icon-theme
-    )
+if [ "$SELKIES_ONLY" = "1" ]; then
+  echo "--- Selkies-only mode: skipping desktop environment packages (using existing $DESKTOP_ENV) ---"
+  if [ "$DESKTOP_ENV" = "xfce" ]; then
+    DE_PACKAGES=(labwc)
   else
-    DE_PACKAGES=(
-      xfce4 xfce4-terminal xfce4-goodies firefox-esr labwc mate-polkit adwaita-icon-theme
-    )
+    DE_PACKAGES=(kwin-wayland qt6-wayland)
   fi
 else
-  if [ "$DISTRO" = "ubuntu" ]; then
-    # Ubuntu: plasma-welcome does not exist as a separate package; skip exclusion marker
-    DE_PACKAGES=(
-      kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
-      plasma-nm-
-    )
+  if [ "$DESKTOP_ENV" = "xfce" ]; then
+    if [ "$DISTRO" = "ubuntu" ]; then
+      DE_PACKAGES=(
+        xfce4 xfce4-terminal xfce4-goodies firefox labwc mate-polkit adwaita-icon-theme
+      )
+    else
+      DE_PACKAGES=(
+        xfce4 xfce4-terminal xfce4-goodies firefox-esr labwc mate-polkit adwaita-icon-theme
+      )
+    fi
   else
-    # Exclude plasma-nm and plasma-welcome (marked with trailing '-') from kde-plasma-desktop recommendations
-    DE_PACKAGES=(
-      kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
-      plasma-nm- plasma-welcome-
-    )
+    if [ "$DISTRO" = "ubuntu" ]; then
+      # Ubuntu: plasma-welcome does not exist as a separate package; skip exclusion marker
+      DE_PACKAGES=(
+        kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
+        plasma-nm-
+      )
+    else
+      # Exclude plasma-nm and plasma-welcome (marked with trailing '-') from kde-plasma-desktop recommendations
+      DE_PACKAGES=(
+        kde-plasma-desktop kwin-wayland qt6-wayland polkit-kde-agent-1 libkf6config-bin libkf6service-bin
+        plasma-nm- plasma-welcome-
+      )
+    fi
   fi
 fi
 

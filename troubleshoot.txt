@@ -27,7 +27,7 @@ journalctl --user -u selkies -f
 # Look for: "Starting plasmashell..." (KDE) or "Starting xfce4-session..." (XFCE)
 journalctl --user -u desktop -n 80 --no-pager
 
-# Pelorus AI navigator logs:
+# Pelorus AI navigator logs (KDE and XFCE only; Pelorus is not installed/started with Sway):
 cat /tmp/pelorus.log
 
 # Follow Desktop session logs in real time:
@@ -44,7 +44,8 @@ sudo journalctl -u nginx -n 30 --no-pager
 --------------------------------------------------------------------------------
 # Both Wayland sockets must exist:
 # wayland-1 (created by Selkies / Pixelflux)
-# wayland-0 (created by nested KWin or Labwc for session apps)
+# wayland-0 (nested KWin / Labwc / Sway for session apps; for wlroots compositors it may be
+#            a symlink to the real socket, e.g. wayland-0 -> wayland-2)
 ls -l "$XDG_RUNTIME_DIR"/wayland-*
 
 # Check that all core processes are running (should print PIDs for each):

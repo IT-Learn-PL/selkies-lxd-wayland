@@ -26,7 +26,7 @@ fi
 
 # CPU rendering optimization (llvmpipe thread count when no GPU render node is present)
 HAS_GPU_NODE=false
-if ls /dev/dri/renderD* /dev/nvidia0 >/dev/null 2>&1; then
+if ls /dev/dri/renderD* >/dev/null 2>&1 || [ -e /dev/nvidia0 ]; then
   HAS_GPU_NODE=true
 else
   CPU_SHARE=$(nproc 2>/dev/null || echo 2)
@@ -45,10 +45,20 @@ else
   echo "[selkies-session] No GPU render node detected: setting LP_NUM_THREADS=${LP_NUM_THREADS}"
 fi
 
+# A socket file can outlive its server (e.g. while Selkies restarts), so check that it really accepts connections
+sock_alive() {
+  python3 - "$1" <<'PYEOF' 2>/dev/null
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(1)
+s.connect(sys.argv[1])
+PYEOF
+}
+
 echo "[selkies-session] Waiting for Selkies Wayland socket at ${PIXELFLUX_SOCKET}..."
 FOUND_SOCKET=false
 for _ in $(seq 1 100); do
-  if [ -S "${PIXELFLUX_SOCKET}" ]; then
+  if [ -S "${PIXELFLUX_SOCKET}" ] && sock_alive "${PIXELFLUX_SOCKET}"; then
     FOUND_SOCKET=true
     break
   fi
@@ -65,6 +75,12 @@ echo "[selkies-session] Connected to Selkies Wayland compositor on ${PIXELFLUX_S
 DESKTOP_ENVIRONMENT="${DESKTOP_ENVIRONMENT:-kde}"
 DESKTOP_ENV_LOWER="${DESKTOP_ENVIRONMENT,,}"
 echo "[selkies-session] Target desktop environment: ${DESKTOP_ENV_LOWER}"
+
+# Pelorus has no window backend for Sway (only KWin and Labwc), so never start it there
+if [ "${DESKTOP_ENV_LOWER}" = "sway" ] && [ "${PELORUS,,}" = "true" ]; then
+  echo "[selkies-session] Pelorus is not supported with Sway - not starting it (set PELORUS=false in selkies.env)"
+  PELORUS=false
+fi
 
 # Disable screen blanking / powerdown
 setterm blank 0 2>/dev/null || true
@@ -108,6 +124,63 @@ elif [ "${DESKTOP_ENV_LOWER}" = "sway" ]; then
   # Sway configuration and directories
   mkdir -p "${HOME}/.config/sway" "${HOME}/.config/autostart" 2>/dev/null || true
 
+  # Seed default Waybar configuration (top bar with a clickable "Menu" launcher button)
+  if command -v waybar >/dev/null 2>&1 \
+     && [ ! -f "${HOME}/.config/waybar/config.jsonc" ] && [ ! -f "${HOME}/.config/waybar/config" ]; then
+    mkdir -p "${HOME}/.config/waybar" 2>/dev/null || true
+    cat > "${HOME}/.config/waybar/config.jsonc" << 'WAYBAR_CFG'
+{
+  "layer": "top",
+  "position": "top",
+  "height": 30,
+  "spacing": 6,
+  "modules-left": ["custom/launcher", "sway/workspaces", "sway/mode"],
+  "modules-center": ["sway/window"],
+  "modules-right": ["pulseaudio", "cpu", "memory", "clock", "tray"],
+  "custom/launcher": {
+    "format": "☰ Menu",
+    "on-click": "pkill -x wofi || wofi --show drun",
+    "tooltip": false
+  },
+  "sway/workspaces": { "disable-scroll": true },
+  "sway/window": { "max-length": 60 },
+  "pulseaudio": { "format": "vol {volume}%", "format-muted": "muted", "on-click": "pactl set-sink-mute @DEFAULT_SINK@ toggle" },
+  "cpu": { "format": "cpu {usage}%" },
+  "memory": { "format": "ram {percentage}%" },
+  "clock": { "format": "{:%Y-%m-%d %H:%M}" },
+  "tray": { "spacing": 8 }
+}
+WAYBAR_CFG
+    cat > "${HOME}/.config/waybar/style.css" << 'WAYBAR_CSS'
+* {
+  font-family: "Noto Sans", "DejaVu Sans", sans-serif;
+  font-size: 13px;
+  border: none;
+  border-radius: 0;
+}
+window#waybar {
+  background: #1a1a2e;
+  color: #e0e0f0;
+}
+#custom-launcher {
+  padding: 0 14px;
+  margin: 3px 4px;
+  background: #3b3b6b;
+  border-radius: 4px;
+  font-weight: bold;
+}
+#custom-launcher:hover { background: #5555a0; }
+#workspaces button {
+  padding: 0 8px;
+  color: #c0c0e0;
+  background: transparent;
+}
+#workspaces button.focused { background: #3b3b6b; color: #ffffff; }
+#workspaces button.urgent { background: #a03030; }
+#pulseaudio, #cpu, #memory, #clock, #tray { padding: 0 8px; }
+WAYBAR_CSS
+  fi
+
   # Seed default Sway configuration if not present
   if [ ! -f "${HOME}/.config/sway/config" ]; then
     if [ -f /etc/sway/config ]; then
@@ -126,12 +199,28 @@ elif [ "${DESKTOP_ENV_LOWER}" = "sway" ]; then
       if command -v wofi >/dev/null 2>&1; then
         sed -i 's/^set \$menu .*/set $menu wofi --show drun/' "${HOME}/.config/sway/config" 2>/dev/null || true
       fi
+      # Replace the default swaybar block with Waybar
+      if command -v waybar >/dev/null 2>&1; then
+        awk '
+          /^[[:space:]]*bar[[:space:]]*\{/ && !in_bar { in_bar = 1; depth = 0 }
+          in_bar { depth += gsub(/\{/, "{") - gsub(/\}/, "}"); if (depth <= 0) in_bar = 0; next }
+          { print }
+        ' "${HOME}/.config/sway/config" > "${HOME}/.config/sway/config.tmp" \
+          && mv "${HOME}/.config/sway/config.tmp" "${HOME}/.config/sway/config"
+        printf '\nbar {\n    swaybar_command waybar\n}\n' >> "${HOME}/.config/sway/config"
+      fi
+      # Solid background when the sway-backgrounds wallpaper is not installed
+      if [ ! -f /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png ]; then
+        sed -i 's/^output .* bg .*/# &/' "${HOME}/.config/sway/config" 2>/dev/null || true
+        echo 'output * bg #1a1a2e solid_color' >> "${HOME}/.config/sway/config"
+      fi
     else
       cat > "${HOME}/.config/sway/config" << 'SWAY_CFG'
 set $mod Mod4
 set $term foot
 set $menu wofi --show drun
 xwayland enable
+output * bg #1a1a2e solid_color
 
 # Basic keybindings
 bindsym $mod+Return exec $term
@@ -293,6 +382,12 @@ if [ "${PELORUS,,}" = "true" ]; then
 fi
 
 # 5. Launch nested compositor (client to wayland-1, hosting wayland-0)
+# wlroots compositors (sway, labwc) pick the first FREE wayland-N socket name on their own,
+# so the name is not guaranteed to be wayland-0. Remove a stale/dangling wayland-0 symlink
+# left by a previous run (it would block the compositor from binding wayland-0) and
+# remember which sockets exist, so the new one can be identified afterwards.
+[ -L "${SOCKET_DIR}/wayland-0" ] && rm -f "${SOCKET_DIR}/wayland-0"
+SOCKETS_BEFORE=" $(cd "${SOCKET_DIR}" && ls -d wayland-* 2>/dev/null | grep -v '\.lock$' | tr '\n' ' ')"
 if [ "${DESKTOP_ENV_LOWER}" = "xfce" ]; then
   echo "[selkies-session] Starting Labwc nested compositor for XFCE..."
   LABWC_ARGS=()
@@ -316,11 +411,23 @@ else
   COMPOSITOR_PID=$!
 fi
 
-# Wait for nested compositor socket (wayland-0)
+# Wait for the nested compositor socket. Normally wayland-0, but wlroots may choose another name.
+APP_SOCKET_NAME="${SELKIES_APP_WAYLAND_DISPLAY:-wayland-0}"
+NESTED_SOCKET=""
 for _ in $(seq 1 100); do
-  if [ -S "${SOCKET_DIR}/wayland-0" ]; then
+  if [ -S "${SOCKET_DIR}/${APP_SOCKET_NAME}" ] && [[ "${SOCKETS_BEFORE}" != *" ${APP_SOCKET_NAME} "* ]]; then
+    NESTED_SOCKET="${APP_SOCKET_NAME}"
     break
   fi
+  for cand in "${SOCKET_DIR}"/wayland-*; do
+    name="$(basename "$cand")"
+    [ -S "$cand" ] || continue
+    [ "$name" = "$(basename "${PIXELFLUX_SOCKET}")" ] && continue
+    [[ "${SOCKETS_BEFORE}" == *" ${name} "* ]] && continue
+    NESTED_SOCKET="$name"
+    break
+  done
+  [ -n "${NESTED_SOCKET}" ] && break
   if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
     echo "[selkies-session] Error: Nested compositor process died unexpectedly!" >&2
     exit 1
@@ -328,11 +435,21 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 
-if [ ! -S "${SOCKET_DIR}/wayland-0" ]; then
-  echo "[selkies-session] Warning: wayland-0 socket not detected yet, continuing..." >&2
+if [ -z "${NESTED_SOCKET}" ]; then
+  echo "[selkies-session] Warning: nested compositor socket not detected, assuming ${APP_SOCKET_NAME}" >&2
+  NESTED_SOCKET="${APP_SOCKET_NAME}"
+elif [ "${NESTED_SOCKET}" != "${APP_SOCKET_NAME}" ]; then
+  echo "[selkies-session] Nested compositor listens on ${NESTED_SOCKET} (expected ${APP_SOCKET_NAME}); linking ${APP_SOCKET_NAME} -> ${NESTED_SOCKET} for Selkies input/clipboard routing"
+  if [ -e "${SOCKET_DIR}/${APP_SOCKET_NAME}" ] && [ ! -L "${SOCKET_DIR}/${APP_SOCKET_NAME}" ]; then
+    echo "[selkies-session] Warning: ${SOCKET_DIR}/${APP_SOCKET_NAME} is occupied by another process; Selkies input may not reach this session" >&2
+  else
+    ln -sfn "${NESTED_SOCKET}" "${SOCKET_DIR}/${APP_SOCKET_NAME}"
+  fi
+else
+  echo "[selkies-session] Nested compositor socket: ${NESTED_SOCKET}"
 fi
 
-export WAYLAND_DISPLAY=wayland-0
+export WAYLAND_DISPLAY="${NESTED_SOCKET}"
 command -v dbus-update-activation-environment >/dev/null 2>&1 && dbus-update-activation-environment --all 2>/dev/null || true
 
 # 6. Desktop helper daemons and authentication agent
@@ -462,4 +579,5 @@ wait "${SESSION_PID}"
 # Cleanup
 echo "[selkies-session] Desktop session terminated, cleaning up..."
 kill "${COMPOSITOR_PID}" 2>/dev/null || true
+[ -L "${SOCKET_DIR}/wayland-0" ] && rm -f "${SOCKET_DIR}/wayland-0"
 [ -n "${PELORUS_PID}" ] && kill "${PELORUS_PID}" 2>/dev/null || true

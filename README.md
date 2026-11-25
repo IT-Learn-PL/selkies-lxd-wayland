@@ -18,9 +18,10 @@ Supports **KDE Plasma**, **XFCE**, and **Sway**, running under native `systemd -
 - **Native Wayland Streaming**: Powered by Pixelflux (Smithay compositor) listening on socket `wayland-1` via WebRTC and HTTPS.
 - **Nested Compositors**:
   - **KDE Plasma**: Uses **KWin Wayland** nested client on `wayland-1`, hosting `wayland-0` and XWayland.
-  - **XFCE**: Uses **Labwc** (wlroots-based stacking compositor) nested client on `wayland-1`, hosting `wayland-0` and XWayland.
-  - **Sway**: Uses **Sway** (wlroots-based i3-compatible tiling compositor) nested client on `wayland-1`, hosting `wayland-0` and XWayland.
-- **Pelorus AI Navigation Agent**: Integrated FastAPI agent (port 5100, reverse-proxied at `/pelorus/`), reading window states and accessibility trees via AT-SPI2 / D-Bus and executing actions through Pixelflux's token-authenticated Computer Use API (port 5000).
+  - **XFCE**: Uses **Labwc** (wlroots-based stacking compositor) nested client on `wayland-1`, hosting the application socket and XWayland.
+  - **Sway**: Uses **Sway** (wlroots-based i3-compatible tiling compositor) nested client on `wayland-1`, hosting the application socket and XWayland. Ships with a **Waybar** top bar and a clickable **Menu** launcher (`wofi`).
+  - The application socket is normally `wayland-0`. wlroots compositors (Sway, Labwc) pick the first free `wayland-N` name themselves, so the session script detects the real name and, if it differs, links `wayland-0` to it (see [Nested compositor socket](#nested-compositor-socket)).
+- **Pelorus AI Navigation Agent** (KDE Plasma and XFCE only): Integrated FastAPI agent (port 5100, reverse-proxied at `/pelorus/`), reading window states and accessibility trees via AT-SPI2 / D-Bus and executing actions through Pixelflux's token-authenticated Computer Use API (port 5000). Pelorus lists and closes windows through KWin (D-Bus) or Labwc (IPC socket) and has no backend for Sway, so **it is not installed or started when Sway is selected** (see [Sway desktop notes](#sway-desktop-notes)).
 - **Proxmox & LXD Native**: Runs as an unprivileged or privileged LXC container; handles `systemd --user` sessions automatically even when initiated via `pct enter` or `su`.
 - **Hardware GPU Acceleration & Video Decoding**:
   - Automatic `/dev/dri` device verification (`video` and `render` group IDs).
@@ -59,9 +60,10 @@ Supports **KDE Plasma**, **XFCE**, and **Sway**, running under native `systemd -
 |   +---------------------------------------+---------------------------------------+   |
 |                                           | (Wayland socket: wayland-1)               |
 |   +---------------------------------------v---------------------------------------+   |
-|   | Nested Desktop Compositor (wayland-0)                                         |   |
+|   | Nested Desktop Compositor (wayland-0 or symlink)                              |   |
 |   |  - KDE: KWin Wayland (kwin-xwayland.py)                                       |   |
 |   |  - XFCE: Labwc (wlroots)                                                      |   |
+|   |  - Sway: Sway (wlroots) + Waybar / wofi launcher                              |   |
 |   |  - XWayland compatibility layer for legacy X11 applications                   |   |
 |   +-------------------+-----------------------------------+-----------------------+   |
 |                       |                                   |                           |
@@ -119,16 +121,53 @@ pct set <CTID> --features nesting=1,keyctl=1
 pct reboot <CTID>
 ```
 
-### 5. GPU Acceleration (Optional)By default, the installer configures software rendering (`KWIN_COMPOSE=Q`) with multi-threaded `llvmpipe`, ensuring smooth execution on CPU-only hosts.
+### 5. GPU Acceleration (Optional)
+
+By default, the installer configures software rendering (`KWIN_COMPOSE=Q`) with multi-threaded `llvmpipe` / `pixman`, ensuring smooth execution on CPU-only hosts. Software rendering at large resolutions (e.g. a full-size browser window) can make the cursor feel laggy; a GPU render node or a smaller resolution helps.
 
 If GPU passthrough is desired:
 - **LXD**:
   ```bash
   lxc config device add <container_name> gpu gpu
   ```
-- **Proxmox VE**: Map `/dev/dri/card*` and `/dev/dri/renderD*` devices into the container and ensure the container's `video` and `render` group IDs match the host.
+- **Proxmox VE**: Map the DRM devices into the container with the `dev<N>` option in `/etc/pve/lxc/<CTID>.conf`, using the group IDs of `render` and `video` **inside the container** (`getent group render video`), then restart the container:
+  ```
+  dev0: /dev/dri/renderD128,gid=<render gid>
+  dev1: /dev/dri/card0,gid=<video gid>
+  ```
 - The installer automatically validates `/dev/dri` permissions and GID mapping during installation.
-- Switch to OpenGL rendering by setting `KWIN_COMPOSE=O2` in `~/.config/selkies/selkies.env`.
+- Switch to GPU rendering by setting `KWIN_COMPOSE=O2` in `~/.config/selkies/selkies.env`, then `systemctl --user restart selkies desktop`. For Sway and Labwc this only means that `WLR_RENDERER=pixman` is no longer forced; wlroots then selects the GPU renderer itself. You can pin the device with `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128`.
+- Verify that the compositor uses the GPU (Sway example):
+  ```bash
+  ls -l /proc/$(pgrep -x sway)/fd | grep dri
+  ```
+
+### Nested compositor socket
+
+Selkies (Pixelflux) owns `wayland-1`. The desktop compositor runs nested on it and creates a socket of its own, which Selkies uses to route input and clipboard (`SELKIES_APP_WAYLAND_DISPLAY`, default `wayland-0`).
+
+KWin can be given a fixed socket name, but wlroots compositors (Sway, Labwc) take the first free `wayland-N`, which is not always `wayland-0`. `selkies-startwm-wayland.sh` therefore:
+
+1. waits until `wayland-1` actually accepts connections (a stale socket file can remain while Selkies restarts),
+2. snapshots the existing sockets before starting the compositor and detects the new one afterwards,
+3. exports the real name as `WAYLAND_DISPLAY` for the session, and
+4. if the name differs from `SELKIES_APP_WAYLAND_DISPLAY`, creates a symlink `wayland-0 -> wayland-N` (removed again when the session ends).
+
+You will see this in `journalctl --user -u desktop`, e.g. `Nested compositor listens on wayland-2 (expected wayland-0); linking wayland-0 -> wayland-2`, and `ls -l "$XDG_RUNTIME_DIR"/wayland-*` shows the symlink.
+
+### Sway desktop notes
+
+- Sway is a tiling compositor and has no start menu by design. The generated setup provides a **Waybar** top bar with a **Menu** button (`wofi --show drun`); `Super+D` opens the same launcher and `Super+Enter` opens `foot`. If your browser or OS captures the `Super` key, use the Menu button or change `set $mod Mod4` to `Mod1` (Alt) in `~/.config/sway/config`.
+- `~/.config/sway/config`, `~/.config/waybar/config.jsonc` and `~/.config/waybar/style.css` are only created when they do not exist yet, so your own changes are never overwritten. To regenerate the defaults, move them aside and restart the session:
+  ```bash
+  mv ~/.config/sway/config ~/.config/sway/config.bak
+  mv ~/.config/waybar ~/.config/waybar.bak
+  systemctl --user restart desktop
+  ```
+- If the `sway-backgrounds` wallpaper is not installed, a solid background colour is used instead.
+- **Pelorus is not available with Sway.** Its window backend (`desktop.py`) only knows KWin (via `qdbus6`) and Labwc (via `labwc.sock`), so on Sway `/api/windows` fails. With `DESKTOP_ENVIRONMENT=sway` the installer therefore skips Pelorus completely: no `/usr/local/bin/pelorus` link, no `/config/agent`, `PELORUS=false` in `selkies.env`, no `/pelorus/` route in Nginx, and the session script does not start it. (The Python package itself ships inside the `/lsiopy` virtualenv of the Selkies image and stays there unused.) The Pixelflux Computer Use API on port 5000 is unaffected.
+- Switching an existing Sway installation: re-run `bash setup.sh sway` (or set `PELORUS=false` in `~/.config/selkies/selkies.env`, re-run `bash 01-init-nginx.sh` with `PELORUS=false` and `systemctl --user restart desktop`).
+- Switching from Sway back to KDE/XFCE: re-run `setup.sh` for that desktop; `PELORUS` is set to `true` again unless you pass `PELORUS=false` yourself.
 
 ---
 
@@ -219,7 +258,7 @@ bash setup.sh --no-cleanup
 | `CUSTOM_WS_PORT` | `8082` | Selkies backend WebSocket port. |
 | `SUBFOLDER` | `/` | Web application root subfolder. |
 | `DISABLE_IPV6` | `true` | Disables IPv6 listener in Nginx. |
-| `PELORUS` | `true` | Enables Pelorus AI navigation server. |
+| `PELORUS` | `true` | Enables Pelorus AI navigation server. Forced to `false` for Sway (unsupported). |
 
 ---
 
@@ -269,16 +308,16 @@ User configuration is managed in `~/.config/selkies/selkies.env`. Changes take e
 
 | Section | Variable | Default | Description |
 |---|---|---|---|
-| **Compositor** | `DESKTOP_ENVIRONMENT` | `kde` | Desktop session: `kde` (KDE Plasma) or `xfce` (XFCE + Labwc). |
-| | `KWIN_COMPOSE` | `Q` | Compositor backend: `Q` (software rendering via QPainter/pixman) or `O2` (OpenGL for GPU passthrough). |
+| **Compositor** | `DESKTOP_ENVIRONMENT` | `kde` | Desktop session: `kde` (KDE Plasma), `xfce` (XFCE + Labwc) or `sway` (Sway + Waybar). |
+| | `KWIN_COMPOSE` | `Q` | Compositor backend: `Q` (software rendering via QPainter/pixman) or `O2` (OpenGL for GPU passthrough). For Sway/Labwc, `Q` sets `WLR_RENDERER=pixman`. |
 | | `PIXELFLUX_WAYLAND` | `true` | Enables Smithay Wayland compositor inside Pixelflux. |
 | | `WAYLAND_DISPLAY` | `wayland-1` | Socket hosted by Pixelflux for nested compositor clients. |
-| | `SELKIES_APP_WAYLAND_DISPLAY` | `wayland-0` | Socket hosted by KWin / Labwc for session applications. |
+| | `SELKIES_APP_WAYLAND_DISPLAY` | `wayland-0` | Socket of the nested compositor (KWin / Labwc / Sway) used by Selkies for input and clipboard. If the compositor picks another name, the session script symlinks it to this one. |
 | **Streaming** | `CUSTOM_WS_PORT` / `SELKIES_PORT` | `8082` | WebSocket port used by Selkies daemon and Nginx proxy. |
 | | `SELKIES_ENCODER` | `h264enc` | Video encoder (`h264enc`, `h265enc`, `vp8enc`, `vp9enc`, `av1enc`, `jpeg`). |
 | | `SELKIES_FRAMERATE` | `60` | Target stream frame rate. |
 | | `SELKIES_COMMAND_ENABLED` | `true` | Enables WebSocket commands required for Selkies 2.2+ sidebar launcher. |
-| **Pelorus AI** | `PELORUS` | `true` | Activates Pelorus AI navigator and UI. |
+| **Pelorus AI** | `PELORUS` | `true` | Activates Pelorus AI navigator and UI. KDE and XFCE only; `setup.sh` sets it to `false` for Sway. |
 | | `PELORUS_PORT` | `5100` | Port for Pelorus FastAPI server. |
 | | `PIXELFLUX_CU` | `5000` | Pixelflux Computer Use API port. |
 | | `PIXELFLUX_CU_TOKEN` | *(auto-generated)* | 32-byte secret Bearer token protecting the Computer Use API. |
@@ -350,7 +389,7 @@ journalctl --user -u selkies -n 50 --no-pager
 # 4. View desktop and Pelorus logs
 journalctl --user -u desktop -n 80 --no-pager
 
-# 5. Check Wayland sockets (both wayland-1 and wayland-0 must exist)
+# 5. Check Wayland sockets (wayland-1 and wayland-0 must exist; wayland-0 may be a symlink to the compositor's real socket)
 ls -l "$XDG_RUNTIME_DIR"/wayland-*
 
 # 6. Verify listening network ports (:3000, :3001, :5000, :5100, :8082)
@@ -373,6 +412,18 @@ For a comprehensive cheatsheet of troubleshooting steps and commands, see [troub
 - **Black screen in browser**:
   - For containers without GPU passthrough, verify `KWIN_COMPOSE=Q` in `~/.config/selkies/selkies.env`.
   - If changing `KWIN_COMPOSE`, remove cached settings (`rm -f ~/.config/kwinrc`) and restart the desktop: `systemctl --user restart desktop`.
+- **Selkies log is full of `wayland-0: No such file or directory` (FakeInput)**:
+  - The nested compositor is not reachable under `SELKIES_APP_WAYLAND_DISPLAY`. Check `ls -l "$XDG_RUNTIME_DIR"/wayland-*` and make sure `/usr/local/bin/selkies-startwm-wayland.sh` is the current version (re-run `bash setup.sh --services-only` or copy it manually) and restart: `systemctl --user restart selkies desktop`.
+- **`selkies.env: syntax error near unexpected token '('`**:
+  - Older installers wrote `TITLE=Debian-13 (Sway)` without quotes. Fix with `sed -i 's/^TITLE=.*/TITLE="Debian-13 (Sway)"/' ~/.config/selkies/selkies.env`.
+- **Sway starts with `Could not connect to remote display: Connection refused`**:
+  - Happens when the session restarts while the old `wayland-1` socket file still exists. The current session script waits for a live socket; the service also retries automatically (`Restart=always`).
+- **Laggy cursor / low frame rate with Sway or Labwc**:
+  - Software rendering at a large resolution is CPU-bound. Check `top` while moving the cursor, pass a GPU through (see [GPU Acceleration](#5-gpu-acceleration-optional)) or try `SELKIES_ENABLE_RESIZE=false` and `SELKIES_FRAMERATE=30` to compare.
+- **Sway shows only a black screen and a bar**:
+  - This is normal for an empty workspace without a wallpaper. Open a terminal (`Super+Enter`) or the Menu button.
+- **No `/pelorus/` page with Sway**: expected, Pelorus is not installed for Sway (see above).
+- **`FileNotFoundError: 'qdbus6'` in `/tmp/pelorus.log`**: Pelorus was started on a desktop other than KDE/Labwc. Set `PELORUS=false` (this is done automatically for Sway).
 - **502 Bad Gateway under `/pelorus/`**:
   - Check if the Pelorus process is running: `pgrep -a pelorus` or inspect `/tmp/pelorus.log`.
   - Verify that `PIXELFLUX_CU=5000` is active and `selkies.service` is running.

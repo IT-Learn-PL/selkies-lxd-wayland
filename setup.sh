@@ -777,16 +777,24 @@ sudo chmod -R a+rX /usr/share/selkies
 sudo chmod -R a+rX /lsiopy
 sudo chmod a+x /lsiopy/bin/*
 
-# Check and install Pelorus if missing from extracted venv
-echo "--- Verifying Selkies and Pelorus components ---"
-if [ -f /lsiopy/bin/pelorus ]; then
-  echo "[OK] Found /lsiopy/bin/pelorus in extracted image."
+# Check and install Pelorus if missing from extracted venv.
+# Pelorus is NOT set up for Sway: its window backend only supports KWin (KDE) and Labwc (XFCE),
+# so no fallback install, no /usr/local/bin/pelorus link, no service start and no Nginx route.
+# (The Python package itself ships inside the /lsiopy venv of the image and is left untouched.)
+if [ "$DESKTOP_ENV" = "sway" ]; then
+  echo "--- Verifying Selkies components (Pelorus is skipped for Sway) ---"
+  sudo rm -f /usr/local/bin/pelorus
 else
-  echo "[WARNING] /lsiopy/bin/pelorus not found, installing Pelorus into /lsiopy venv..."
-  sudo /lsiopy/bin/pip install git+https://github.com/linuxserver/pelorus.git || true
+  echo "--- Verifying Selkies and Pelorus components ---"
+  if [ -f /lsiopy/bin/pelorus ]; then
+    echo "[OK] Found /lsiopy/bin/pelorus in extracted image."
+  else
+    echo "[WARNING] /lsiopy/bin/pelorus not found, installing Pelorus into /lsiopy venv..."
+    sudo /lsiopy/bin/pip install git+https://github.com/linuxserver/pelorus.git || true
+  fi
+  sudo ln -sf /lsiopy/bin/pelorus /usr/local/bin/pelorus
 fi
 sudo ln -sf /lsiopy/bin/selkies /usr/local/bin/selkies
-sudo ln -sf /lsiopy/bin/pelorus /usr/local/bin/pelorus
 
 # 9. Check for missing dynamic library dependencies in /lsiopy
 echo "--- Checking dynamic library dependencies in /lsiopy ---"
@@ -807,8 +815,12 @@ for comp in kwin_wayland labwc sway; do
 done
 sudo rm -f /usr/share/dbus-1/system-services/org.freedesktop.UDisks2.service
 
-# 11. Prepare configuration directory for Pelorus AI (/config/agent)
-sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /config /config/agent
+# 11. Prepare configuration directory (and the Pelorus AI agent directory /config/agent, not needed for Sway)
+if [ "$DESKTOP_ENV" = "sway" ]; then
+  sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /config
+else
+  sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /config /config/agent
+fi
 sudo chown -R "$USER:$(id -gn)" /config 2>/dev/null || true
 
 # Prepare /tmp/.X11-unix directory for XWayland session
@@ -855,16 +867,29 @@ fi
 if [ "$DESKTOP_ENV" = "xfce" ]; then
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
   echo 'PELORUS_ENVIRONMENT="XFCE Desktop (Linux)"' >> ~/.config/selkies/selkies.env
-  sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (XFCE)/" ~/.config/selkies/selkies.env
+  sed -i "s/^TITLE=.*/TITLE=\"${OS_TITLE_PREFIX} (XFCE)\"/" ~/.config/selkies/selkies.env
 elif [ "$DESKTOP_ENV" = "sway" ]; then
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
-  echo 'PELORUS_ENVIRONMENT="Sway Desktop (Linux)"' >> ~/.config/selkies/selkies.env
-  sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (Sway)/" ~/.config/selkies/selkies.env
+  sed -i "s/^TITLE=.*/TITLE=\"${OS_TITLE_PREFIX} (Sway)\"/" ~/.config/selkies/selkies.env
 else
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
   echo 'PELORUS_ENVIRONMENT="KDE Plasma Desktop (Linux)"' >> ~/.config/selkies/selkies.env
-  sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (KDE)/" ~/.config/selkies/selkies.env
+  sed -i "s/^TITLE=.*/TITLE=\"${OS_TITLE_PREFIX} (KDE)\"/" ~/.config/selkies/selkies.env
 fi
+
+# Pelorus on/off. Disabled for Sway (no window backend for it); otherwise on unless the user passed PELORUS=...
+if [ "$DESKTOP_ENV" = "sway" ]; then
+  if [ "${PELORUS:-}" = "true" ]; then
+    warn "Pelorus is not supported with Sway (its window backend only supports KDE and XFCE/Labwc) - disabling it."
+  fi
+  PELORUS=false
+elif [ -z "${PELORUS:-}" ]; then
+  PELORUS=true
+fi
+export PELORUS
+sed -i '/^PELORUS=/d' ~/.config/selkies/selkies.env
+echo "PELORUS=$PELORUS" >> ~/.config/selkies/selkies.env
+echo "[INFO] PELORUS=$PELORUS (desktop: $DESKTOP_ENV)"
 
 # Ensure critical ports and settings are present in existing configuration
 for cfg_line in \
@@ -955,6 +980,6 @@ echo "=== Installation completed successfully! ($(date -Is)) ==="
 echo "Installation log saved to: $INSTALL_LOG"
 echo "Access URLs:"
 echo "  Desktop: https://<container_ip>:3001/ or http://<container_ip>:3000/"
-echo "  Pelorus AI: https://<container_ip>:3001/pelorus/"
+[ "${PELORUS:-true}" = "true" ] && echo "  Pelorus AI: https://<container_ip>:3001/pelorus/"
 echo
 echo "Check services:  systemctl --user status pulseaudio selkies desktop"

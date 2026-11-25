@@ -138,7 +138,7 @@ If GPU passthrough is desired:
 Inside the LXC container as a regular user with `sudo` permissions (or as root; `setup.sh` will automatically switch to the designated user):
 
 ```bash
-git clone https://github.com/TranceEX/selkies-lxd-wayland.git
+git clone https://github.com/IT-Learn-PL/selkies-lxd-wayland.git
 cd selkies-lxd-wayland
 bash setup.sh
 ```

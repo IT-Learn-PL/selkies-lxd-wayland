@@ -104,6 +104,99 @@ if [ "${DESKTOP_ENV_LOWER}" = "xfce" ]; then
   if [ "${KWIN_COMPOSE}" = "Q" ] || [ "${KWIN_COMPOSE}" = "QPainter" ]; then
     export WLR_RENDERER=pixman
   fi
+elif [ "${DESKTOP_ENV_LOWER}" = "sway" ]; then
+  # Sway configuration and directories
+  mkdir -p "${HOME}/.config/sway" "${HOME}/.config/autostart" 2>/dev/null || true
+
+  # Seed default Sway configuration if not present
+  if [ ! -f "${HOME}/.config/sway/config" ]; then
+    if [ -f /etc/sway/config ]; then
+      cp -p /etc/sway/config "${HOME}/.config/sway/config" 2>/dev/null || true
+    fi
+    if [ -f "${HOME}/.config/sway/config" ]; then
+      # Ensure xwayland is enabled
+      if ! grep -q "^xwayland " "${HOME}/.config/sway/config"; then
+        echo "xwayland enable" >> "${HOME}/.config/sway/config"
+      fi
+      # Use foot as default terminal if available
+      if command -v foot >/dev/null 2>&1; then
+        sed -i 's/^set \$term .*/set $term foot/' "${HOME}/.config/sway/config" 2>/dev/null || true
+      fi
+      # Use wofi as default menu if available
+      if command -v wofi >/dev/null 2>&1; then
+        sed -i 's/^set \$menu .*/set $menu wofi --show drun/' "${HOME}/.config/sway/config" 2>/dev/null || true
+      fi
+    else
+      cat > "${HOME}/.config/sway/config" << 'SWAY_CFG'
+set $mod Mod4
+set $term foot
+set $menu wofi --show drun
+xwayland enable
+
+# Basic keybindings
+bindsym $mod+Return exec $term
+bindsym $mod+Shift+q kill
+bindsym $mod+d exec $menu
+bindsym $mod+Shift+c reload
+bindsym $mod+Shift+e exit
+
+# Focus navigation
+bindsym $mod+Left focus left
+bindsym $mod+Down focus down
+bindsym $mod+Up focus up
+bindsym $mod+Right focus right
+
+bindsym $mod+Shift+Left move left
+bindsym $mod+Shift+Down move down
+bindsym $mod+Shift+Up move up
+bindsym $mod+Shift+Right move right
+
+# Workspaces
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5
+
+# Layout management
+bindsym $mod+b splith
+bindsym $mod+v splitv
+bindsym $mod+s layout stacking
+bindsym $mod+w layout tabbed
+bindsym $mod+e layout toggle split
+bindsym $mod+f fullscreen
+bindsym $mod+Shift+space floating toggle
+bindsym $mod+space focus mode_toggle
+
+# Status bar
+bar {
+    swaybar_command waybar
+}
+SWAY_CFG
+    fi
+  fi
+
+  # Sway Wayland session environment
+  export XDG_CURRENT_DESKTOP=sway
+  export XDG_SESSION_DESKTOP=sway
+  export XDG_SESSION_TYPE=wayland
+  export DESKTOP_SESSION=sway
+  export GDK_BACKEND="wayland,x11"
+  export QT_QPA_PLATFORM=wayland
+  export CLUTTER_BACKEND=wayland
+  export SDL_VIDEODRIVER=wayland
+  export MOZ_ENABLE_WAYLAND=1
+  export WLR_NO_HARDWARE_CURSORS=1
+
+  # Software rendering fallback for LXC without GPU passthrough
+  if [ "${KWIN_COMPOSE}" = "Q" ] || [ "${KWIN_COMPOSE}" = "QPainter" ]; then
+    export WLR_RENDERER=pixman
+  fi
 else
   # KDE initial configuration (only if not already existing)
   mkdir -p "${HOME}/.config" "${HOME}/.local/share" "${HOME}/.config/autostart" 2>/dev/null || true
@@ -208,6 +301,15 @@ if [ "${DESKTOP_ENV_LOWER}" = "xfce" ]; then
   fi
   WAYLAND_DISPLAY=wayland-1 labwc "${LABWC_ARGS[@]}" &
   COMPOSITOR_PID=$!
+elif [ "${DESKTOP_ENV_LOWER}" = "sway" ]; then
+  echo "[selkies-session] Starting Sway nested compositor..."
+  SWAY_ARGS=(--unsupported-gpu)
+  if [ -f "${HOME}/.config/sway/config" ]; then
+    SWAY_ARGS+=(-c "${HOME}/.config/sway/config")
+  fi
+  WAYLAND_DISPLAY=wayland-1 sway "${SWAY_ARGS[@]}" &
+  COMPOSITOR_PID=$!
+  SESSION_PID=$COMPOSITOR_PID
 else
   echo "[selkies-session] Starting KWin Wayland nested compositor for KDE..."
   WAYLAND_DISPLAY=wayland-1 python3 /usr/local/bin/kwin-xwayland.py &
@@ -234,9 +336,15 @@ export WAYLAND_DISPLAY=wayland-0
 command -v dbus-update-activation-environment >/dev/null 2>&1 && dbus-update-activation-environment --all 2>/dev/null || true
 
 # 6. Desktop helper daemons and authentication agent
-if [ "${DESKTOP_ENV_LOWER}" != "xfce" ]; then
+if [ "${DESKTOP_ENV_LOWER}" != "xfce" ] && [ "${DESKTOP_ENV_LOWER}" != "sway" ]; then
   command -v kcminit_startup >/dev/null 2>&1 && kcminit_startup 2>/dev/null || true
   command -v kded6 >/dev/null 2>&1 && kded6 &
+fi
+
+# Notification daemon and wallpaper for Sway
+if [ "${DESKTOP_ENV_LOWER}" = "sway" ]; then
+  command -v mako >/dev/null 2>&1 && ! pgrep -x mako >/dev/null 2>&1 && mako &
+  command -v swaybg >/dev/null 2>&1 && ! pgrep -x swaybg >/dev/null 2>&1 && swaybg -c "#1a1a2e" &
 fi
 
 # Polkit authentication agent
@@ -299,7 +407,9 @@ if [ "${PELORUS,,}" = "true" ]; then
 fi
 
 # 8. Start primary Desktop Session
-if [ "${DESKTOP_ENV_LOWER}" = "xfce" ]; then
+if [ "${DESKTOP_ENV_LOWER}" = "sway" ]; then
+  echo "[selkies-session] Sway session running (PID: ${SESSION_PID})"
+elif [ "${DESKTOP_ENV_LOWER}" = "xfce" ]; then
   echo "[selkies-session] Starting XFCE session (xfce4-session)..."
   xfce4-session &
   SESSION_PID=$!

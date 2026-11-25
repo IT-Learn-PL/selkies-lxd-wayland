@@ -9,12 +9,12 @@ set -eo pipefail
 #   - Ubuntu 26.04 LTS (Resolute Raccoon)
 #
 # Usage:
-#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--selkies-only] [--packages-only] [--services-only] [--fix-session] [--no-cleanup]
+#   bash setup.sh [kde|xfce|sway] [--with-chrome|--no-chrome] [--selkies-only] [--packages-only] [--services-only] [--fix-session] [--no-cleanup]
 #
 #   --with-chrome    installs Google Chrome via install-chrome.sh (x86_64 only)
 #   --no-chrome      skips Google Chrome installation without prompting
 #   --selkies-only   installs Selkies only, skipping desktop environment packages
-#                    (use when KDE or XFCE is already installed)
+#                    (use when KDE, XFCE, or Sway is already installed)
 #   --packages-only  installs only system packages and dependencies, then exits
 #   --services-only  skips package installation; only configures the
 #                    systemd --user services (useful after a failed install)
@@ -22,8 +22,8 @@ set -eo pipefail
 #   --no-cleanup     skips automatic removal of previous Selkies components during update
 #
 # Variables:
-#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   SELKIES_ONLY=0|1   PACKAGES_ONLY=0|1
-#   SERVICES_ONLY=0|1      SKIP_CLEANUP=0|1        PASSWORD=...       SETUP_USER=<user> (when running as root)
+#   DESKTOP_ENV=kde|xfce|sway   INSTALL_CHROME=yes|no   SELKIES_ONLY=0|1   PACKAGES_ONLY=0|1
+#   SERVICES_ONLY=0|1           SKIP_CLEANUP=0|1        PASSWORD=...       SETUP_USER=<user> (when running as root)
 # ==============================================================================
 
 # The script must run from its own directory (it copies files via relative paths)
@@ -47,7 +47,7 @@ for arg in "$@"; do
     --fix-session)   FIX_SESSION_ONLY=1 ;;
     --with-chrome)   INSTALL_CHROME="yes" ;;
     --no-chrome)     INSTALL_CHROME="no" ;;
-    kde|KDE|xfce|XFCE) DESKTOP_ENV="${arg,,}" ;;
+    kde|KDE|xfce|XFCE|sway|SWAY) DESKTOP_ENV="${arg,,}" ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
@@ -295,6 +295,8 @@ detect_installed_de() {
     echo "kde"
   elif command -v xfce4-session >/dev/null 2>&1 || [ -f /usr/bin/xfce4-session ]; then
     echo "xfce"
+  elif command -v sway >/dev/null 2>&1 || [ -f /usr/bin/sway ]; then
+    echo "sway"
   else
     echo ""
   fi
@@ -383,7 +385,7 @@ remove_existing_selkies() {
   echo "[OK] Previous Selkies components removed successfully."
 }
 
-# 2. Select Desktop Environment (KDE or XFCE) and installation mode
+# 2. Select Desktop Environment (KDE, XFCE, or Sway) and installation mode
 detected_de="$(detect_installed_de)"
 
 DESKTOP_ENV="${DESKTOP_ENV:-}"
@@ -403,10 +405,12 @@ if [ -z "$DESKTOP_ENV" ]; then
       echo "Select existing Desktop Environment to integrate with Selkies:"
       echo "  1) KDE Plasma (Wayland) [default]"
       echo "  2) XFCE (Wayland + Labwc)"
+      echo "  3) Sway (Wayland tiling compositor)"
       echo "--------------------------------------------------"
-      read -rp "Enter choice [1-2, default 1]: " de_choice || de_choice=""
+      read -rp "Enter choice [1-3, default 1]: " de_choice || de_choice=""
       case "$de_choice" in
         2|xfce|XFCE) DESKTOP_ENV="xfce" ;;
+        3|sway|SWAY) DESKTOP_ENV="sway" ;;
         *)           DESKTOP_ENV="kde" ;;
       esac
     else
@@ -418,27 +422,38 @@ if [ -z "$DESKTOP_ENV" ]; then
       case "$detected_de" in
         kde)  echo "Detected installed desktop: KDE Plasma (plasmashell)" ;;
         xfce) echo "Detected installed desktop: XFCE (xfce4-session)" ;;
+        sway) echo "Detected installed desktop: Sway (sway)" ;;
         *)    echo "Detected installed desktop: $detected_de" ;;
       esac
     fi
     echo "Select Desktop Environment / Installation Mode:"
     echo "  1) Install KDE Plasma (Wayland) [default]"
     echo "  2) Install XFCE (Wayland + Labwc)"
-    echo "  3) Selkies only with existing KDE Plasma (skip desktop packages)"
-    echo "  4) Selkies only with existing XFCE (skip desktop packages)"
+    echo "  3) Install Sway (Wayland tiling compositor)"
+    echo "  4) Selkies only with existing KDE Plasma (skip desktop packages)"
+    echo "  5) Selkies only with existing XFCE (skip desktop packages)"
+    echo "  6) Selkies only with existing Sway (skip desktop packages)"
     echo "--------------------------------------------------"
-    read -rp "Enter choice [1-4, default 1]: " de_choice || de_choice=""
+    read -rp "Enter choice [1-6, default 1]: " de_choice || de_choice=""
     case "$de_choice" in
       2|xfce|XFCE)
         DESKTOP_ENV="xfce"
         SELKIES_ONLY=0
         ;;
-      3)
+      3|sway|SWAY)
+        DESKTOP_ENV="sway"
+        SELKIES_ONLY=0
+        ;;
+      4)
         DESKTOP_ENV="kde"
         SELKIES_ONLY=1
         ;;
-      4)
+      5)
         DESKTOP_ENV="xfce"
+        SELKIES_ONLY=1
+        ;;
+      6)
+        DESKTOP_ENV="sway"
         SELKIES_ONLY=1
         ;;
       *)
@@ -454,6 +469,9 @@ fi
 case "${DESKTOP_ENV,,}" in
   xfce)
     DESKTOP_ENV="xfce"
+    ;;
+  sway)
+    DESKTOP_ENV="sway"
     ;;
   *)
     DESKTOP_ENV="kde"
@@ -534,7 +552,7 @@ elif [ "$DISTRO" = "ubuntu" ]; then
   sudo add-apt-repository -y universe 2>/dev/null || true
   sudo add-apt-repository -y restricted 2>/dev/null || true
   # Add Mozilla Team PPA to get a proper .deb Firefox instead of the Snap redirect (skip in Selkies-only mode)
-  if [ "$DESKTOP_ENV" = "xfce" ] && [ "$SELKIES_ONLY" != "1" ]; then
+  if { [ "$DESKTOP_ENV" = "xfce" ] || [ "$DESKTOP_ENV" = "sway" ]; } && [ "$SELKIES_ONLY" != "1" ]; then
     echo "--- Adding Mozilla Team PPA for Firefox .deb package (Ubuntu) ---"
     sudo add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null || warn "Failed to add Mozilla PPA; Firefox snap may be used instead."
     # Prioritize the .deb over the snap redirect
@@ -579,6 +597,8 @@ if [ "$SELKIES_ONLY" = "1" ]; then
   echo "--- Selkies-only mode: skipping desktop environment packages (using existing $DESKTOP_ENV) ---"
   if [ "$DESKTOP_ENV" = "xfce" ]; then
     DE_PACKAGES=(labwc)
+  elif [ "$DESKTOP_ENV" = "sway" ]; then
+    DE_PACKAGES=(sway)
   else
     DE_PACKAGES=(kwin-wayland qt6-wayland)
   fi
@@ -591,6 +611,16 @@ else
     else
       DE_PACKAGES=(
         xfce4 xfce4-terminal xfce4-goodies firefox-esr labwc mate-polkit adwaita-icon-theme
+      )
+    fi
+  elif [ "$DESKTOP_ENV" = "sway" ]; then
+    if [ "$DISTRO" = "ubuntu" ]; then
+      DE_PACKAGES=(
+        sway swaybg swayidle swaylock waybar wofi mako-notifier xdg-desktop-portal-wlr mate-polkit adwaita-icon-theme firefox
+      )
+    else
+      DE_PACKAGES=(
+        sway swaybg swayidle swaylock waybar wofi mako-notifier xdg-desktop-portal-wlr mate-polkit adwaita-icon-theme firefox-esr
       )
     fi
   else
@@ -769,7 +799,7 @@ else
 fi
 
 # 10. Reset capabilities on compositors and disable UDisks2 D-Bus activation (required for unprivileged LXC containers)
-for comp in kwin_wayland labwc; do
+for comp in kwin_wayland labwc sway; do
   if command -v "$comp" >/dev/null 2>&1; then
     sudo setcap -r "$(command -v "$comp")" 2>/dev/null || true
     echo "[OK] Removed capabilities from $comp for proper unprivileged LXC operation."
@@ -826,6 +856,10 @@ if [ "$DESKTOP_ENV" = "xfce" ]; then
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
   echo 'PELORUS_ENVIRONMENT="XFCE Desktop (Linux)"' >> ~/.config/selkies/selkies.env
   sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (XFCE)/" ~/.config/selkies/selkies.env
+elif [ "$DESKTOP_ENV" = "sway" ]; then
+  sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
+  echo 'PELORUS_ENVIRONMENT="Sway Desktop (Linux)"' >> ~/.config/selkies/selkies.env
+  sed -i "s/^TITLE=.*/TITLE=${OS_TITLE_PREFIX} (Sway)/" ~/.config/selkies/selkies.env
 else
   sed -i '/^PELORUS_ENVIRONMENT=/d' ~/.config/selkies/selkies.env
   echo 'PELORUS_ENVIRONMENT="KDE Plasma Desktop (Linux)"' >> ~/.config/selkies/selkies.env

@@ -2,7 +2,7 @@
 
 High-performance installation and setup scripts for running **Selkies** WebRTC desktop streaming in native **Wayland** mode with the **Pelorus** AI navigator inside **LXC / LXD / Proxmox VE** containers.
 
-Supports both **KDE Plasma** and **XFCE**, running under native `systemd --user` session management without requiring Docker or nested container engines.
+Supports **KDE Plasma**, **XFCE**, and **Sway**, running under native `systemd --user` session management without requiring Docker or nested container engines.
 
 > [!IMPORTANT]
 > **Supported operating systems only:**
@@ -19,6 +19,7 @@ Supports both **KDE Plasma** and **XFCE**, running under native `systemd --user`
 - **Nested Compositors**:
   - **KDE Plasma**: Uses **KWin Wayland** nested client on `wayland-1`, hosting `wayland-0` and XWayland.
   - **XFCE**: Uses **Labwc** (wlroots-based stacking compositor) nested client on `wayland-1`, hosting `wayland-0` and XWayland.
+  - **Sway**: Uses **Sway** (wlroots-based i3-compatible tiling compositor) nested client on `wayland-1`, hosting `wayland-0` and XWayland.
 - **Pelorus AI Navigation Agent**: Integrated FastAPI agent (port 5100, reverse-proxied at `/pelorus/`), reading window states and accessibility trees via AT-SPI2 / D-Bus and executing actions through Pixelflux's token-authenticated Computer Use API (port 5000).
 - **Proxmox & LXD Native**: Runs as an unprivileged or privileged LXC container; handles `systemd --user` sessions automatically even when initiated via `pct enter` or `su`.
 - **Hardware GPU Acceleration & Video Decoding**:
@@ -147,8 +148,10 @@ During interactive execution, the installer detects any already installed deskto
 1. **Desktop Environment & Installation Mode**:
    - `1` for KDE Plasma full install (default)
    - `2` for XFCE full install
-   - `3` for Selkies only using existing KDE Plasma (skips desktop packages)
-   - `4` for Selkies only using existing XFCE (skips desktop packages)
+   - `3` for Sway full install
+   - `4` for Selkies only using existing KDE Plasma (skips desktop packages)
+   - `5` for Selkies only using existing XFCE (skips desktop packages)
+   - `6` for Selkies only using existing Sway (skips desktop packages)
 2. **Google Chrome**: Option to install Google Chrome with Wayland & VA-API acceleration (x86_64 only).
 
 All installation output is mirrored in real time to `/tmp/selkies-lxd-wayland-install.log`.
@@ -166,8 +169,12 @@ bash setup.sh kde --with-chrome
 # Install XFCE without Google Chrome
 bash setup.sh xfce --no-chrome
 
+# Install Sway (Wayland tiling compositor)
+bash setup.sh sway
+
 # Install Selkies only for an already installed desktop (skips DE package downloads)
 bash setup.sh kde --selkies-only
+bash setup.sh sway --selkies-only
 # or auto-detect installed desktop:
 bash setup.sh --selkies-only
 
@@ -187,7 +194,7 @@ bash setup.sh --no-cleanup
 #### Available CLI Arguments:
 | Argument | Description |
 |---|---|
-| `kde` / `xfce` | Selects target desktop environment (`kde` = KDE Plasma 6, `xfce` = XFCE 4 with Labwc). |
+| `kde` / `xfce` / `sway` | Selects target desktop environment (`kde` = KDE Plasma 6, `xfce` = XFCE 4 with Labwc, `sway` = Sway tiling compositor). |
 | `--with-chrome` | Automatically installs Google Chrome (x86_64 only) with hardware decoding. |
 | `--no-chrome` | Skips Google Chrome installation prompt. |
 | `--selkies-only` | Installs Selkies streaming components and services only, skipping desktop environment packages (for systems with an already installed desktop). |
@@ -199,7 +206,7 @@ bash setup.sh --no-cleanup
 #### Supported Environment Variables:
 | Variable | Default | Description |
 |---|---|---|
-| `DESKTOP_ENV` | `kde` | Target desktop environment (`kde` or `xfce`). |
+| `DESKTOP_ENV` | `kde` | Target desktop environment (`kde`, `xfce`, or `sway`). |
 | `INSTALL_CHROME` | `no` | Install Google Chrome (`yes` or `no`). |
 | `SELKIES_ONLY` | `0` | Installs Selkies only without installing desktop environment packages (equivalent to `--selkies-only`). |
 | `PACKAGES_ONLY` | `0` | Installs only system packages and dependencies (equivalent to `--packages-only`). |

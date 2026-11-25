@@ -9,7 +9,7 @@ set -eo pipefail
 #   - Ubuntu 26.04 LTS (Resolute Raccoon)
 #
 # Usage:
-#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--selkies-only] [--packages-only] [--services-only] [--fix-session]
+#   bash setup.sh [kde|xfce] [--with-chrome|--no-chrome] [--selkies-only] [--packages-only] [--services-only] [--fix-session] [--no-cleanup]
 #
 #   --with-chrome    installs Google Chrome via install-chrome.sh (x86_64 only)
 #   --no-chrome      skips Google Chrome installation without prompting
@@ -19,10 +19,11 @@ set -eo pipefail
 #   --services-only  skips package installation; only configures the
 #                    systemd --user services (useful after a failed install)
 #   --fix-session    only repairs/checks the systemd user session, then exits
+#   --no-cleanup     skips automatic removal of previous Selkies components during update
 #
 # Variables:
-#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   SELKIES_ONLY=0|1   PACKAGES_ONLY=0|1   SERVICES_ONLY=0|1
-#   PASSWORD=...           SETUP_USER=<user> (when running as root)
+#   DESKTOP_ENV=kde|xfce   INSTALL_CHROME=yes|no   SELKIES_ONLY=0|1   PACKAGES_ONLY=0|1
+#   SERVICES_ONLY=0|1      SKIP_CLEANUP=0|1        PASSWORD=...       SETUP_USER=<user> (when running as root)
 # ==============================================================================
 
 # The script must run from its own directory (it copies files via relative paths)
@@ -34,6 +35,7 @@ INSTALL_LOG="/tmp/selkies-lxd-wayland-install.log"
 PACKAGES_ONLY="${PACKAGES_ONLY:-0}"
 SERVICES_ONLY="${SERVICES_ONLY:-0}"
 SELKIES_ONLY="${SELKIES_ONLY:-0}"
+SKIP_CLEANUP="${SKIP_CLEANUP:-0}"
 FIX_SESSION_ONLY=0
 ORIG_ARGS=("$@")
 for arg in "$@"; do
@@ -41,6 +43,7 @@ for arg in "$@"; do
     --packages-only|--package-only) PACKAGES_ONLY=1 ;;
     --services-only) SERVICES_ONLY=1 ;;
     --selkies-only|--no-desktop|--skip-de) SELKIES_ONLY=1 ;;
+    --no-cleanup)    SKIP_CLEANUP=1 ;;
     --fix-session)   FIX_SESSION_ONLY=1 ;;
     --with-chrome)   INSTALL_CHROME="yes" ;;
     --no-chrome)     INSTALL_CHROME="no" ;;
@@ -142,7 +145,7 @@ reexec_as_user_if_root() {
 
   local envs="" v
   for v in DESKTOP_ENV INSTALL_CHROME CHROME_EXTRA_FLAGS PASSWORD CUSTOM_PORT CUSTOM_HTTPS_PORT CUSTOM_WS_PORT SUBFOLDER DASHBOARD \
-           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY PACKAGES_ONLY SELKIES_ONLY; do
+           DISABLE_IPV6 SELKIES_FILE_TRANSFERS HARDEN_DESKTOP PELORUS SELKIES_IMAGE SERVICES_ONLY PACKAGES_ONLY SELKIES_ONLY SKIP_CLEANUP; do
     [ -n "${!v:-}" ] && envs+=" $(printf '%s=%q' "$v" "${!v}")"
   done
   local args=""
@@ -297,6 +300,89 @@ detect_installed_de() {
   fi
 }
 
+# Check whether Selkies or any of its components are already installed on the system
+is_selkies_installed() {
+  if [ -d /lsiopy ] || \
+     [ -d /usr/share/selkies ] || \
+     [ -f /usr/lib/selkies_input_interposer.so ] || \
+     [ -f /usr/lib/selkies_joystick_interposer.so ] || \
+     [ -f /usr/local/bin/selkies ] || \
+     [ -f /usr/local/bin/pelorus ] || \
+     [ -f /usr/local/bin/selkies-startwm-wayland.sh ] || \
+     [ -f /usr/local/bin/kwin-xwayland.py ] || \
+     [ -f /usr/local/bin/selkies-proot ] || \
+     [ -f /usr/bin/selkies-desktop ] || \
+     [ -f "$HOME/.config/systemd/user/selkies.service" ] || \
+     [ -f "$HOME/.config/systemd/user/desktop.service" ] || \
+     systemctl --user is-active --quiet selkies 2>/dev/null || \
+     systemctl --user is-enabled --quiet selkies 2>/dev/null; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# Remove all existing Selkies components prior to reinstallation (clean update)
+remove_existing_selkies() {
+  log "Existing Selkies installation detected - removing previous components for clean update..."
+
+  # 1. Stop and disable systemd user services
+  log "Stopping and disabling Selkies user services..."
+  systemctl --user stop desktop.service selkies.service 2>/dev/null || true
+  systemctl --user disable desktop.service selkies.service 2>/dev/null || true
+  rm -f "$HOME/.config/systemd/user/selkies.service" "$HOME/.config/systemd/user/desktop.service"
+  systemctl --user daemon-reload 2>/dev/null || true
+
+  # 2. Terminate any running Selkies, Pelorus, or session processes
+  log "Terminating running Selkies and Pelorus processes..."
+  pkill -9 -f '/lsiopy/bin/selkies' 2>/dev/null || true
+  pkill -9 -f '/lsiopy/bin/pelorus' 2>/dev/null || true
+  pkill -9 -f 'selkies-startwm-wayland' 2>/dev/null || true
+  pkill -9 -f 'kwin-xwayland.py' 2>/dev/null || true
+
+  # 3. Remove installed binaries and session scripts
+  log "Removing installed Selkies binaries and scripts..."
+  sudo rm -f /usr/local/bin/selkies \
+             /usr/local/bin/pelorus \
+             /usr/local/bin/selkies-startwm-wayland.sh \
+             /usr/local/bin/kwin-xwayland.py \
+             /usr/local/bin/selkies-proot \
+             /usr/bin/selkies-desktop
+
+  # 4. Remove Selkies interposer libraries and fake libudev
+  log "Removing Selkies libraries..."
+  sudo rm -f /usr/lib/selkies_input_interposer.so \
+             /usr/lib/selkies_joystick_interposer.so \
+             /usr/lib/selkies_v4l2_interposer.so \
+             /opt/lib/libudev.so.1.0.0-fake
+
+  # 5. Remove Selkies virtual environment, web assets, and proot-apps
+  log "Removing /lsiopy, /usr/share/selkies, and /proot-apps..."
+  sudo rm -rf /lsiopy /usr/share/selkies /proot-apps
+  rm -f "$HOME/.local/bin/proot" "$HOME/.local/bin/proot-apps" "$HOME/.local/bin/bwrap" "$HOME/.local/bin/jq" 2>/dev/null || true
+
+  # 6. Remove PulseAudio custom configuration
+  sudo rm -f /etc/pulse/default.pa.d/selkies.pa
+
+  # 7. Remove temporary udocker containers
+  if command -v udocker >/dev/null 2>&1; then
+    udocker rm -f selkies_tmp 2>/dev/null || true
+  fi
+
+  # 8. Clean up runtime logs and temporary sockets
+  rm -f /tmp/pelorus.log
+  sudo rm -f /tmp/.X11-unix/X* 2>/dev/null || true
+
+  # 9. Backup existing environment configuration if present
+  if [ -f "$HOME/.config/selkies/selkies.env" ]; then
+    cp -f "$HOME/.config/selkies/selkies.env" "$HOME/.config/selkies/selkies.env.bak"
+    rm -f "$HOME/.config/selkies/selkies.env"
+    log "Backed up existing selkies.env to ~/.config/selkies/selkies.env.bak"
+  fi
+
+  echo "[OK] Previous Selkies components removed successfully."
+}
+
 # 2. Select Desktop Environment (KDE or XFCE) and installation mode
 detected_de="$(detect_installed_de)"
 
@@ -418,6 +504,13 @@ fi
 
 # 3. Set variables
 echo "[OK] Variables Set"
+
+# 3b. Clean up previous Selkies installation if present (clean update mode)
+if [ "$SERVICES_ONLY" != "1" ] && [ "$PACKAGES_ONLY" != "1" ] && [ "${SKIP_CLEANUP:-0}" != "1" ]; then
+  if is_selkies_installed; then
+    remove_existing_selkies
+  fi
+fi
 
 # 4. Create required directories
 mkdir -p ~/.config/rclone ~/.config/selkies ~/.config/systemd/user "$HOME/Desktop"
@@ -707,6 +800,15 @@ sudo chmod 755 /usr/local/bin/kwin-xwayland.py
 if [ ! -f ~/.config/selkies/selkies.env ]; then
   cp selkies.env ~/.config/selkies/selkies.env
   echo "[OK] Created ~/.config/selkies/selkies.env"
+  # In update mode: restore custom settings from backup if present and not overridden
+  if [ -f ~/.config/selkies/selkies.env.bak ]; then
+    for var in PELORUS_PROVIDER PELORUS_ENDPOINT PELORUS_MODEL PELORUS_API_KEY CUSTOM_PORT CUSTOM_HTTPS_PORT; do
+      old_val=$(grep "^${var}=" ~/.config/selkies/selkies.env.bak 2>/dev/null | cut -d= -f2- | tr -d '\r' || true)
+      if [ -n "$old_val" ] && [ "$old_val" != '""' ] && [ -z "${!var:-}" ]; then
+        sed -i "s|^${var}=.*|${var}=${old_val}|" ~/.config/selkies/selkies.env
+      fi
+    done
+  fi
 fi
 
 # Synchronize desktop environment and Pelorus environment settings

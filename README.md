@@ -177,8 +177,11 @@ bash setup.sh kde --packages-only
 # Repair or reconfigure only systemd --user services without reinstalling packages
 bash setup.sh --services-only
 
-# Check and fix only the systemd user session (e.g., after pct enter)
-bash setup.sh --fix-session
+# Update existing installation (automatically cleans previous Selkies components)
+bash setup.sh
+
+# Reconfigure or install without cleaning previous components
+bash setup.sh --no-cleanup
 ```
 
 #### Available CLI Arguments:
@@ -191,6 +194,7 @@ bash setup.sh --fix-session
 | `--packages-only` | Installs only required system packages and dependencies, then exits (skips Selkies image extraction, services, and configuration). |
 | `--services-only` | Skips package downloads and only writes service files and configuration. |
 | `--fix-session` | Diagnoses and repairs the `systemd --user` session bus, then exits. |
+| `--no-cleanup` | Skips automatic removal of previous Selkies components during reinstallation or update. |
 
 #### Supported Environment Variables:
 | Variable | Default | Description |
@@ -200,6 +204,7 @@ bash setup.sh --fix-session
 | `SELKIES_ONLY` | `0` | Installs Selkies only without installing desktop environment packages (equivalent to `--selkies-only`). |
 | `PACKAGES_ONLY` | `0` | Installs only system packages and dependencies (equivalent to `--packages-only`). |
 | `SERVICES_ONLY` | `0` | Configures only services and environment files, skipping package installations (equivalent to `--services-only`). |
+| `SKIP_CLEANUP` | `0` | Skips automatic removal of previous Selkies components during update (equivalent to `--no-cleanup`). |
 | `PASSWORD` | *(empty)* | Sets HTTP Basic Authentication password for Nginx web access. |
 | `SETUP_USER` | *(auto)* | Target username when script is executed as `root` (e.g. from `pct enter`). |
 | `CUSTOM_PORT` | `3000` | Nginx HTTP port. |
